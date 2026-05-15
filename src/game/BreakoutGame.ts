@@ -182,7 +182,7 @@ export class BreakoutGame {
   private readonly renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
   private readonly renderPipeline: THREE.RenderPipeline;
   private readonly retroScenePass: ReturnType<typeof retroPass>;
-  private readonly stats: Stats | null;
+  private readonly stats = new Stats();
   private readonly sound = new SoundBank();
   private readonly keys = new Set<string>();
   private readonly pointerRaycaster = new THREE.Raycaster();
@@ -233,11 +233,8 @@ export class BreakoutGame {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x07080b, 0);
     this.shell.appendChild(this.renderer.domElement);
-    this.stats = new URLSearchParams(window.location.search).get('stats') === 'true' ? new Stats() : null;
-    this.stats?.showPanel(0);
-    if (this.stats) {
-      this.shell.appendChild(this.stats.dom);
-    }
+    this.stats.showPanel(0);
+    this.shell.appendChild(this.stats.dom);
     this.scene.add(this.camera);
 
     this.retroScenePass = retroPass(this.scene, this.camera, {
@@ -729,7 +726,7 @@ export class BreakoutGame {
     const frameTime = Math.max(0, (time - this.lastTime) / 1000);
     const delta = Math.min(frameTime, MAX_DT);
     this.lastTime = time;
-    this.stats?.begin();
+    this.stats.begin();
     this.updateGameSpeedTween(delta);
     this.updatePlaneZTransitions(delta);
     this.updateSplitBloom(delta);
@@ -755,7 +752,7 @@ export class BreakoutGame {
     this.updatePlaneHudBillboards();
     this.nebula?.system.update(delta);
     this.renderPipeline.render();
-    this.stats?.end();
+    this.stats.end();
     requestAnimationFrame(this.tick);
   };
 
