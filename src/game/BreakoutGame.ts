@@ -55,7 +55,7 @@ const SPLIT_PLANE_TRAVEL_DURATION = 0.82;
 const SPLIT_PLANE_SPAWN_Z_OFFSET = 0.36;
 const SPLIT_BLOOM_DURATION = 1.2;
 const SPLIT_GLOW_BASE_OPACITY = 0.3;
-const BALL_SPEED_ACTIVE_GAME_EXPONENT = 0.5;
+const BALL_SPEED_ACTIVE_GAME_SCALE = 0.5;
 const CAMERA_FOV = 59;
 const CAMERA_DISTANCE_PADDING = 1.24;
 const CAMERA_ELEVATION = 0;
@@ -1122,7 +1122,7 @@ export class BreakoutGame {
   }
 
   private ballSpeedMultiplierForActiveGames(activeGameCount: number): number {
-    return 1 / activeGameCount ** BALL_SPEED_ACTIVE_GAME_EXPONENT;
+    return BALL_SPEED_ACTIVE_GAME_SCALE ** (activeGameCount - 1);
   }
 
   private get activeGameCount(): number {
