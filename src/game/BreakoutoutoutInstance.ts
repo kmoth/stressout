@@ -37,8 +37,9 @@ const SPLIT_BONUS_MIN_Y = -2.1;
 const SPLIT_BONUS_MAX_Y = BRICK_TOP_Y + 0.1;
 const SPLITTER_BALL_SAFE_SECONDS = 0.42;
 const SPLITTER_BALL_SAFE_PADDING = 0.72;
+const MIN_MOVING_BALL_SPEED = 0.0001;
 
-export type Phase = 'ready' | 'playing' | 'level-clear' | 'game-over';
+export type Phase = 'ready' | 'playing' | 'cleared' | 'game-over';
 export type BrickKind = 'normal' | 'splitter' | 'autopilot' | 'life';
 
 export type BreakoutInput = {
@@ -68,7 +69,6 @@ export type BrickSnapshot = {
 export type BreakoutoutoutSnapshot = {
   score: number;
   lives: number;
-  level: number;
   phase: Phase;
   paddleX: number;
   targetPaddleX: number;
@@ -103,7 +103,7 @@ type Brick = BrickSnapshot & {
 
 export function createSplitRealitySnapshot(snapshot: BreakoutoutoutSnapshot, random = Math.random): BreakoutoutoutSnapshot {
   const clonedBricks = snapshot.bricks.map((brick) => ({ ...brick }));
-  const additions = createSplitBonusBricks(snapshot.level, clonedBricks, snapshot.ball, random);
+  const additions = createSplitBonusBricks(clonedBricks, snapshot.ball, random);
 
   return {
     ...snapshot,
@@ -127,12 +127,14 @@ export class BreakoutoutoutInstance {
   private bricks: Brick[] = [];
   private score = 0;
   private lives = 3;
-  private level = 1;
   private phase: Phase = 'ready';
   private paddleX = 0;
   private targetPaddleX = 0;
   private autoPilotRemaining = 0;
   private ballSpeedMultiplier = 1;
+  private gameSpeed = 1;
+  private lastBallDirectionX = 0;
+  private lastBallDirectionY = 1;
   private readonly persistentAutopilot: boolean;
 
   constructor(id: number, snapshot?: BreakoutoutoutSnapshot, options: BreakoutoutoutOptions = {}) {
@@ -144,7 +146,6 @@ export class BreakoutoutoutInstance {
     if (snapshot) {
       this.score = snapshot.score;
       this.lives = snapshot.lives;
-      this.level = snapshot.level;
       this.phase = snapshot.phase;
       this.paddleX = snapshot.paddleX;
       this.targetPaddleX = snapshot.targetPaddleX;
@@ -173,7 +174,7 @@ export class BreakoutoutoutInstance {
     this.world.timestep = delta;
     this.world.step(this.eventQueue);
     if (!this.persistentAutopilot) {
-      this.autoPilotRemaining = Math.max(0, this.autoPilotRemaining - delta);
+      this.autoPilotRemaining = Math.max(0, this.autoPilotRemaining - delta * this.gameSpeed);
     }
     events.push(...this.resolveCollisions());
     if (this.phase === 'playing') {
@@ -183,7 +184,7 @@ export class BreakoutoutoutInstance {
   }
 
   launchOrAdvance(): BreakoutoutoutEvent[] {
-    if (this.phase !== 'ready') {
+    if (this.phase !== 'ready' || this.gameSpeed <= MIN_MOVING_BALL_SPEED) {
       return [];
     }
 
@@ -205,13 +206,12 @@ export class BreakoutoutoutInstance {
   }
 
   restart(): BreakoutoutoutEvent[] {
-    if (this.phase === 'game-over' || this.phase === 'level-clear') {
+    if (this.phase === 'game-over' || this.phase === 'cleared') {
       return [];
     }
 
     this.score = 0;
     this.lives = 3;
-    this.level = 1;
     this.phase = 'ready';
     this.paddleX = 0;
     this.targetPaddleX = 0;
@@ -231,7 +231,6 @@ export class BreakoutoutoutInstance {
     return {
       score: this.score,
       lives: this.lives,
-      level: this.level,
       phase: this.phase,
       paddleX: this.paddleX,
       targetPaddleX: this.targetPaddleX,
@@ -249,17 +248,72 @@ export class BreakoutoutoutInstance {
   }
 
   getRenderState(): BreakoutoutoutRenderState {
+    const ballPosition = this.ballBody.translation();
+    const ballVelocity = this.ballBody.linvel();
+
     return {
       id: this.id,
-      ...this.snapshot()
+      score: this.score,
+      lives: this.lives,
+      phase: this.phase,
+      paddleX: this.paddleX,
+      targetPaddleX: this.targetPaddleX,
+      autoPilotRemaining: this.autoPilotRemaining,
+      autoPilotActive: this.isAutopilotActive,
+      ballSpeedMultiplier: this.ballSpeedMultiplier,
+      ball: {
+        x: ballPosition.x,
+        y: ballPosition.y,
+        vx: ballVelocity.x,
+        vy: ballVelocity.y
+      },
+      bricks: this.bricks
     };
   }
 
   setBallSpeedMultiplier(multiplier: number): void {
+    this.rememberBallDirection();
     const factor = multiplier / this.ballSpeedMultiplier;
     this.ballSpeedMultiplier = multiplier;
     const velocity = this.ballBody.linvel();
-    this.ballBody.setLinvel({ x: velocity.x * factor, y: velocity.y * factor, z: 0 }, true);
+    const speed = Math.hypot(velocity.x, velocity.y);
+
+    if (speed > MIN_MOVING_BALL_SPEED) {
+      this.ballBody.setLinvel({ x: velocity.x * factor, y: velocity.y * factor, z: 0 }, true);
+    } else if (this.phase === 'playing' && this.gameSpeed > 0) {
+      this.restoreBallVelocityFromDirection();
+    }
+  }
+
+  setGameSpeed(speed: number): void {
+    const nextSpeed = clamp(speed, 0, 1);
+    if (nextSpeed === this.gameSpeed) {
+      return;
+    }
+
+    this.rememberBallDirection();
+    const previousSpeed = this.gameSpeed;
+    this.gameSpeed = nextSpeed;
+
+    if (this.phase !== 'playing') {
+      return;
+    }
+
+    const velocity = this.ballBody.linvel();
+    const currentSpeed = Math.hypot(velocity.x, velocity.y);
+
+    if (nextSpeed <= MIN_MOVING_BALL_SPEED) {
+      this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      return;
+    }
+
+    if (currentSpeed > MIN_MOVING_BALL_SPEED && previousSpeed > MIN_MOVING_BALL_SPEED) {
+      const factor = nextSpeed / previousSpeed;
+      this.ballBody.setLinvel({ x: velocity.x * factor, y: velocity.y * factor, z: 0 }, true);
+      return;
+    }
+
+    this.restoreBallVelocityFromDirection();
   }
 
   isActive(): boolean {
@@ -267,7 +321,7 @@ export class BreakoutoutoutInstance {
   }
 
   isCleared(): boolean {
-    return this.phase === 'level-clear';
+    return this.phase === 'cleared';
   }
 
   placePaddleAt(x: number): void {
@@ -275,7 +329,11 @@ export class BreakoutoutoutInstance {
       return;
     }
 
-    this.setPaddlePosition(x);
+    this.setPaddleTarget(x);
+
+    if (this.phase !== 'playing') {
+      this.setPaddlePosition(this.targetPaddleX);
+    }
   }
 
   dispose(): void {
@@ -340,7 +398,7 @@ export class BreakoutoutoutInstance {
   }
 
   private createBricks(brickSnapshots?: BrickSnapshot[]): void {
-    const snapshots = brickSnapshots ?? createFreshBrickSnapshots(this.level);
+    const snapshots = brickSnapshots ?? createFreshBrickSnapshots();
     this.bricks = snapshots.map((snapshot) => ({ ...snapshot }));
     this.brickByCollider.clear();
 
@@ -366,26 +424,39 @@ export class BreakoutoutoutInstance {
   }
 
   private updatePaddle(delta: number, input: BreakoutInput): void {
+    const maxStep = PADDLE_SPEED * this.gameSpeed * delta;
+
     if (this.phase === 'playing' && this.isAutopilotActive) {
       const ballX = this.ballBody.translation().x;
-      const maxStep = PADDLE_SPEED * delta;
       const step = clamp(ballX - this.paddleX, -maxStep, maxStep);
       this.setPaddlePosition(this.paddleX + step);
       return;
     }
 
     if (typeof input.paddleX === 'number' && Number.isFinite(input.paddleX)) {
-      this.setPaddlePosition(input.paddleX);
+      this.setPaddleTarget(input.paddleX);
+      this.movePaddleTowardTarget(maxStep);
       return;
     }
 
     const direction = Number(input.right) - Number(input.left);
     if (direction !== 0) {
-      this.setPaddlePosition(this.paddleX + direction * PADDLE_SPEED * delta);
+      this.setPaddlePosition(this.paddleX + direction * maxStep);
       return;
     }
 
     this.syncPaddleBody();
+  }
+
+  private setPaddleTarget(x: number): void {
+    this.targetPaddleX = clamp(x, this.minPaddleX, this.maxPaddleX);
+  }
+
+  private movePaddleTowardTarget(maxStep: number): void {
+    const targetX = this.targetPaddleX;
+    const step = clamp(this.targetPaddleX - this.paddleX, -maxStep, maxStep);
+    this.setPaddlePosition(this.paddleX + step);
+    this.targetPaddleX = targetX;
   }
 
   private setPaddlePosition(x: number): void {
@@ -504,9 +575,9 @@ export class BreakoutoutoutInstance {
 
     if (this.hasClearedRequiredBricks()) {
       this.clearOptionalSplitterBricks();
-      this.phase = 'level-clear';
+      this.phase = 'cleared';
       this.autoPilotRemaining = 0;
-      events.push({ type: 'sound', name: 'level' });
+      events.push({ type: 'sound', name: 'clear' });
     }
 
     events.push({ type: 'state-changed' });
@@ -541,9 +612,18 @@ export class BreakoutoutoutInstance {
     const position = this.ballBody.translation();
     const velocity = this.ballBody.linvel();
     const speed = Math.max(this.currentBallSpeed, this.minimumBallSpeed);
+
+    if (speed <= MIN_MOVING_BALL_SPEED) {
+      this.ballBody.setTranslation({ x: position.x, y: position.y, z: 0 }, true);
+      this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      return;
+    }
+
     const planarSpeed = Math.hypot(velocity.x, velocity.y) || speed;
     const normalizedX = velocity.x / planarSpeed;
     const normalizedY = velocity.y / planarSpeed;
+    this.lastBallDirectionX = normalizedX;
+    this.lastBallDirectionY = normalizedY;
 
     this.ballBody.setTranslation({ x: position.x, y: position.y, z: 0 }, true);
     this.ballBody.setLinvel(
@@ -593,20 +673,20 @@ export class BreakoutoutoutInstance {
   }
 
   private get launchBallSpeed(): number {
-    return BALL_SPEED * this.ballSpeedMultiplier;
+    return BALL_SPEED * this.ballSpeedMultiplier * this.gameSpeed;
   }
 
   private get minimumBallSpeed(): number {
-    return (BALL_SPEED + this.level * 0.24) * this.ballSpeedMultiplier;
+    return BALL_SPEED * this.ballSpeedMultiplier * this.gameSpeed;
   }
 
   private get paddleBounceBallSpeed(): number {
-    return (BALL_SPEED + this.level * 0.28) * this.ballSpeedMultiplier;
+    return BALL_SPEED * this.ballSpeedMultiplier * this.gameSpeed;
   }
 
   private get isAutopilotActive(): boolean {
     return this.phase !== 'game-over'
-      && this.phase !== 'level-clear'
+      && this.phase !== 'cleared'
       && (this.persistentAutopilot || this.autoPilotRemaining > 0);
   }
 
@@ -620,9 +700,38 @@ export class BreakoutoutoutInstance {
     const offset = clamp(centeredOffset + randomOffset, -1, 1);
     return Math.abs(offset) < AUTOPILOT_BOUNCE_OFFSET_MIN ? sign * AUTOPILOT_BOUNCE_OFFSET_MIN : offset;
   }
+
+  private rememberBallDirection(): void {
+    const velocity = this.ballBody.linvel();
+    const speed = Math.hypot(velocity.x, velocity.y);
+
+    if (speed <= MIN_MOVING_BALL_SPEED) {
+      return;
+    }
+
+    this.lastBallDirectionX = velocity.x / speed;
+    this.lastBallDirectionY = velocity.y / speed;
+  }
+
+  private restoreBallVelocityFromDirection(): void {
+    const speed = this.minimumBallSpeed;
+    if (speed <= MIN_MOVING_BALL_SPEED) {
+      this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      return;
+    }
+
+    this.ballBody.setLinvel(
+      {
+        x: this.lastBallDirectionX * speed,
+        y: this.lastBallDirectionY * speed,
+        z: 0
+      },
+      true
+    );
+  }
 }
 
-function createFreshBrickSnapshots(level: number): BrickSnapshot[] {
+function createFreshBrickSnapshots(): BrickSnapshot[] {
   const brickWidth = (BOARD_WIDTH - BRICK_LEFT_PAD * 2 - BRICK_GAP * (BRICK_COLS - 1)) / BRICK_COLS;
   const palette = [0xf45b69, 0xf59f00, 0xf7d154, 0x2ec4b6, 0x4cc9f0, 0xa78bfa];
   const splitCol = Math.floor(BRICK_COLS / 2);
@@ -633,7 +742,7 @@ function createFreshBrickSnapshots(level: number): BrickSnapshot[] {
       const kind = getFreshBrickKind(row, col, splitCol);
       const x = -HALF_WIDTH + BRICK_LEFT_PAD + brickWidth / 2 + col * (brickWidth + BRICK_GAP);
       const y = BRICK_TOP_Y - row * (BRICK_HEIGHT + BRICK_GAP);
-      const color = getBrickColor(kind, row, level, palette);
+      const color = getBrickColor(kind, row, palette);
 
       bricks.push({
         id: `${row}:${col}`,
@@ -655,7 +764,6 @@ function createFreshBrickSnapshots(level: number): BrickSnapshot[] {
 }
 
 function createSplitBonusBricks(
-  level: number,
   existingBricks: BrickSnapshot[],
   carriedBall: BallSnapshot,
   random: () => number
@@ -669,8 +777,7 @@ function createSplitBonusBricks(
     const kind = kinds[index];
     const placed = kind === 'splitter'
       ? placeSplitBonusBrick({
-          id: `split-${level}-${existingBricks.length}-${index}`,
-          level,
+          id: `split-${existingBricks.length}-${index}`,
           width: brickWidth,
           height: BRICK_HEIGHT,
           existingBricks: [...existingBricks, ...additions],
@@ -678,8 +785,7 @@ function createSplitBonusBricks(
           random
         })
       : placeBonusBrick({
-          id: `split-${level}-${existingBricks.length}-${index}`,
-          level,
+          id: `split-${existingBricks.length}-${index}`,
           kind,
           width: brickWidth,
           height: BRICK_HEIGHT,
@@ -695,7 +801,6 @@ function createSplitBonusBricks(
 
 function placeSplitBonusBrick(options: {
   id: string;
-  level: number;
   width: number;
   height: number;
   existingBricks: BrickSnapshot[];
@@ -712,7 +817,6 @@ function placeSplitBonusBrick(options: {
       return createBonusBrickSnapshot(
         {
           id: options.id,
-          level: options.level,
           kind: 'splitter',
           width: options.width,
           height: options.height,
@@ -744,7 +848,6 @@ function placeSplitBonusBrick(options: {
       return createBonusBrickSnapshot(
         {
           id: options.id,
-          level: options.level,
           kind: 'splitter',
           width: options.width,
           height: options.height,
@@ -761,7 +864,6 @@ function placeSplitBonusBrick(options: {
   return createBonusBrickSnapshot(
     {
       id: options.id,
-      level: options.level,
       kind: 'splitter',
       width: options.width,
       height: options.height,
@@ -776,7 +878,6 @@ function placeSplitBonusBrick(options: {
 
 function placeBonusBrick(options: {
   id: string;
-  level: number;
   kind: BrickKind;
   width: number;
   height: number;
@@ -815,7 +916,6 @@ function placeBonusBrick(options: {
 function createBonusBrickSnapshot(
   options: {
     id: string;
-    level: number;
     kind: BrickKind;
     width: number;
     height: number;
@@ -835,7 +935,7 @@ function createBonusBrickSnapshot(
     width: options.width,
     height: options.height,
     color: options.color,
-    points: getBonusBrickPoints(options.kind, options.level),
+    points: getBonusBrickPoints(options.kind),
     kind: options.kind,
     hit: false
   };
@@ -857,7 +957,7 @@ function getFreshBrickKind(row: number, col: number, splitCol: number): BrickKin
   return 'normal';
 }
 
-function getBrickColor(kind: BrickKind, row: number, level: number, palette: number[]): number {
+function getBrickColor(kind: BrickKind, row: number, palette: number[]): number {
   if (kind === 'splitter') {
     return SPLITTER_COLOR;
   }
@@ -870,7 +970,7 @@ function getBrickColor(kind: BrickKind, row: number, level: number, palette: num
     return LIFE_COLOR;
   }
 
-  return palette[(row + level - 1) % palette.length];
+  return palette[row % palette.length];
 }
 
 function getBrickPoints(kind: BrickKind, row: number): number {
@@ -889,20 +989,20 @@ function getBrickPoints(kind: BrickKind, row: number): number {
   return (BRICK_ROWS - row) * 10;
 }
 
-function getBonusBrickPoints(kind: BrickKind, level: number): number {
+function getBonusBrickPoints(kind: BrickKind): number {
   if (kind === 'splitter') {
-    return 180 + level * 20;
+    return 200;
   }
 
   if (kind === 'autopilot') {
-    return 140 + level * 18;
+    return 160;
   }
 
   if (kind === 'life') {
-    return 120 + level * 16;
+    return 140;
   }
 
-  return 70 + level * 10;
+  return 80;
 }
 
 function getBrickSound(kind: BrickKind): ToneName {

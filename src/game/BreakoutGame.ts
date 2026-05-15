@@ -5,6 +5,7 @@ import { barrelUV, colorBleeding, scanlines, vignette } from 'three/examples/jsm
 import { retroPass } from 'three/examples/jsm/tsl/display/RetroPassNode.js';
 import { circle } from 'three/examples/jsm/tsl/display/Shape.js';
 import { bayerDither } from 'three/examples/jsm/tsl/math/Bayer.js';
+import Stats from 'three/examples/jsm/libs/stats.module.js';
 import System, {
   Alpha,
   Body,
@@ -49,6 +50,11 @@ import { SoundBank } from './sound';
 
 const MAX_DT = 1 / 20;
 const PLANE_Z_GAP = 5;
+const SPLIT_GAME_SPEED_TWEEN_DURATION = 0.55;
+const SPLIT_PLANE_TRAVEL_DURATION = 0.82;
+const SPLIT_PLANE_SPAWN_Z_OFFSET = 0.36;
+const SPLIT_BLOOM_DURATION = 1.2;
+const SPLIT_GLOW_BASE_OPACITY = 0.3;
 const BALL_SPEED_ACTIVE_GAME_EXPONENT = 0.5;
 const CAMERA_FOV = 59;
 const CAMERA_DISTANCE_PADDING = 1.24;
@@ -75,16 +81,26 @@ const PADDLE_EMISSIVE = 0x1fbfb1;
 const PADDLE_AUTOPILOT_COLOR = 0xeafffb;
 const PADDLE_AUTOPILOT_EMISSIVE = 0x34d399;
 const PADDLE_BASE_EMISSIVE_INTENSITY = 0.28;
-const HUD_CAMERA_DEPTH = 4;
 const HUD_TEXTURE_SCALE = 2;
 const HUD_FONT_FAMILY = 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-const GLOBAL_HUD_RENDER_ORDER = 100;
 const PLANE_HUD_RENDER_ORDER = 80;
 const PLANE_STATUS_WORLD_HEIGHT = 1.35;
 const PLANE_STATUS_MAX_WIDTH = BOARD_WIDTH - 1.2;
 const PLANE_STATUS_Y = -1.05;
 const PLANE_STATUS_Z = 0.88;
+const PLANE_CORNER_HUD_Z = 0.92;
+const PLANE_CORNER_HUD_GAP = 0.28;
+const PLANE_SCORE_WORLD_HEIGHT = 0.42;
+const PLANE_SCORE_MAX_WIDTH = 4.8;
+const PLANE_HEART_WORLD_HEIGHT = 0.34;
+const PLANE_HEART_MAX_WIDTH = 3.8;
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
+const PHASE_STATUS_LABEL = {
+  ready: 'READY',
+  playing: '',
+  cleared: 'CLEARED',
+  'game-over': 'GAME OVER'
+} satisfies Record<BreakoutoutoutRenderState['phase'], string>;
 
 type NebulaRuntime = {
   system: any;
@@ -106,13 +122,55 @@ type NebulaRuntime = {
   };
 };
 
+type PlaneZTransition = {
+  from: number;
+  to: number;
+  elapsed: number;
+  duration: number;
+  selectOnComplete: boolean;
+};
+
+type GameSpeedTween = {
+  from: number;
+  to: number;
+  elapsed: number;
+  duration: number;
+  onComplete?: () => void;
+};
+
+type PendingSplit = {
+  source: BreakoutoutoutInstance;
+  snapshot: BreakoutoutoutSnapshot;
+};
+
+type SplitBloomPulse = {
+  instance: BreakoutoutoutInstance;
+  elapsed: number;
+  duration: number;
+  strength: number;
+};
+
+type SplitGlowMesh = {
+  mesh: THREE.Mesh;
+  material: THREE.MeshBasicMaterial;
+  baseScale: number;
+  pulseScale: number;
+};
+
 type InstanceView = {
   instance: BreakoutoutoutInstance;
   group: THREE.Group;
   paddleMesh: THREE.Mesh;
   ballMesh: THREE.Mesh;
   bricks: Map<string, THREE.Mesh>;
+  activeBrickIds: Set<string>;
+  splitGlowMeshes: SplitGlowMesh[];
+  scoreText: HudTextPlane;
+  hearts: HudHeartsPlane;
   statusText: HudTextPlane;
+  renderState: BreakoutoutoutRenderState;
+  appliedOpacity: number;
+  zTransition?: PlaneZTransition;
 };
 
 export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot'>;
@@ -124,6 +182,7 @@ export class BreakoutGame {
   private readonly renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
   private readonly renderPipeline: THREE.RenderPipeline;
   private readonly retroScenePass: ReturnType<typeof retroPass>;
+  private readonly stats: Stats | null;
   private readonly sound = new SoundBank();
   private readonly keys = new Set<string>();
   private readonly pointerRaycaster = new THREE.Raycaster();
@@ -136,23 +195,23 @@ export class BreakoutGame {
   private readonly pointerBoardQuaternion = new THREE.Quaternion();
   private readonly planeHudParentQuaternion = new THREE.Quaternion();
   private readonly planeHudCameraQuaternion = new THREE.Quaternion();
-  private readonly globalHudGroup = new THREE.Group();
-  private readonly scoreText = new HudTextPlane({ fontSize: 22, fill: '#f4f9f8', renderOrder: GLOBAL_HUD_RENDER_ORDER });
-  private readonly livesText = new HudTextPlane({ fontSize: 22, fill: '#f4f9f8', renderOrder: GLOBAL_HUD_RENDER_ORDER });
-  private readonly levelText = new HudTextPlane({ fontSize: 18, fill: '#f0c95d', renderOrder: GLOBAL_HUD_RENDER_ORDER });
-  private readonly realityText = new HudTextPlane({ fontSize: 16, fill: '#8ce9df', renderOrder: GLOBAL_HUD_RENDER_ORDER });
   // private readonly particleTexture: THREE.CanvasTexture;
   private readonly autopilot: boolean;
   private readonly instanceSoundPosition = new THREE.Vector3();
   private readonly instances: BreakoutoutoutInstance[] = [];
   private readonly views = new Map<BreakoutoutoutInstance, InstanceView>();
+  private readonly pendingSplits: PendingSplit[] = [];
+  private readonly splitBloomPulses: SplitBloomPulse[] = [];
+  private readonly splitGlowActiveInstances = new Set<BreakoutoutoutInstance>();
 
   private nebula: NebulaRuntime | null = null;
   private accumulator = 0;
   private lastTime = performance.now();
   private nextInstanceId = 1;
   private selectedIndex = 0;
-  private ballSpeedMultiplier = 1;
+  private gameSpeed = 1;
+  private gameSpeedTween: GameSpeedTween | null = null;
+  private splitSequenceActive = false;
   private cameraBaseDistance = 24;
   private cameraFocusX = 0;
   private cameraFocusY = CAMERA_ELEVATION;
@@ -174,8 +233,12 @@ export class BreakoutGame {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x07080b, 0);
     this.shell.appendChild(this.renderer.domElement);
+    this.stats = new URLSearchParams(window.location.search).get('stats') === 'true' ? new Stats() : null;
+    this.stats?.showPanel(0);
+    if (this.stats) {
+      this.shell.appendChild(this.stats.dom);
+    }
     this.scene.add(this.camera);
-    this.createThreeHud();
 
     this.retroScenePass = retroPass(this.scene, this.camera, {
       affineDistortion: uniform(RETRO_AFFINE_DISTORTION)
@@ -219,22 +282,8 @@ export class BreakoutGame {
     game.createNebulaSystem();
     game.addInstance(new BreakoutoutoutInstance(game.nextInstanceId, undefined, { autopilot: game.autopilot }));
     game.nextInstanceId += 1;
-    game.updateHud();
     requestAnimationFrame(game.tick);
     return game;
-  }
-
-  private createThreeHud(): void {
-    this.globalHudGroup.name = 'Global HUD';
-    this.globalHudGroup.position.z = -HUD_CAMERA_DEPTH;
-    this.globalHudGroup.renderOrder = GLOBAL_HUD_RENDER_ORDER;
-    this.globalHudGroup.add(
-      this.scoreText.mesh,
-      this.livesText.mesh,
-      this.levelText.mesh,
-      this.realityText.mesh
-    );
-    this.camera.add(this.globalHudGroup);
   }
 
   private createNebulaSystem(): void {
@@ -272,14 +321,16 @@ export class BreakoutGame {
     this.scene.add(ambient, key, rim);
   }
 
-  private addInstance(instance: BreakoutoutoutInstance): void {
+  private addInstance(instance: BreakoutoutoutInstance): InstanceView {
     this.instances.push(instance);
+    instance.setGameSpeed(this.gameSpeed);
     this.syncBallSpeedForAll();
     const view = this.createInstanceView(instance);
     this.views.set(instance, view);
     this.scene.add(view.group);
     this.arrangePlanes();
     this.selectInstance(this.selectedIndex);
+    return view;
   }
 
   private createInstanceView(instance: BreakoutoutoutInstance): InstanceView {
@@ -287,15 +338,44 @@ export class BreakoutGame {
     const group = new THREE.Group();
     const paddleMesh = this.createPaddleMesh();
     const ballMesh = this.createBallMesh();
+    const scoreText = this.createPlaneScoreText();
+    const hearts = new HudHeartsPlane({ renderOrder: PLANE_HUD_RENDER_ORDER });
     const statusText = this.createPlaneStatusText();
     const bricks = new Map<string, THREE.Mesh>();
+    const activeBrickIds = new Set<string>();
+    const splitGlowMeshes: SplitGlowMesh[] = [];
 
-    this.createWalls(group);
-    group.add(paddleMesh, ballMesh, statusText.mesh);
+    this.createWalls(group, splitGlowMeshes);
+    splitGlowMeshes.push(this.attachSplitGlow(paddleMesh, PADDLE_EMISSIVE, { baseScale: 1.18, pulseScale: 0.42 }));
+    splitGlowMeshes.push(this.attachSplitGlow(ballMesh, 0xffe5a8, { baseScale: 1.75, pulseScale: 0.86 }));
+    group.add(paddleMesh, ballMesh, scoreText.mesh, hearts.mesh, statusText.mesh);
 
-    const view: InstanceView = { instance, group, paddleMesh, ballMesh, bricks, statusText };
+    const view: InstanceView = {
+      instance,
+      group,
+      paddleMesh,
+      ballMesh,
+      bricks,
+      activeBrickIds,
+      splitGlowMeshes,
+      scoreText,
+      hearts,
+      statusText,
+      renderState: state,
+      appliedOpacity: Number.NaN
+    };
     this.syncInstanceView(view, state, 0);
     return view;
+  }
+
+  private createPlaneScoreText(): HudTextPlane {
+    return new HudTextPlane({
+      fontSize: 28,
+      fill: '#f4f9f8',
+      paddingX: 0,
+      paddingY: 0,
+      renderOrder: PLANE_HUD_RENDER_ORDER
+    });
   }
 
   private createPlaneStatusText(): HudTextPlane {
@@ -318,20 +398,20 @@ export class BreakoutGame {
   createBackboard(group: THREE.Group): void {
     const backing = new THREE.Mesh(
       new THREE.BoxGeometry(BOARD_WIDTH + 0.75, BOARD_HEIGHT + 0.55, 0.2),
-      new THREE.MeshStandardMaterial({
+      makeFadeableMaterial(new THREE.MeshStandardMaterial({
         color: 0x101116,
         roughness: 0.74,
         metalness: 0.08
-      })
+      }))
     );
     backing.position.set(0, 0.1, -0.54);
     group.add(backing);
 
-    const laneMaterial = new THREE.MeshBasicMaterial({
+    const laneMaterial = makeFadeableMaterial(new THREE.MeshBasicMaterial({
       color: 0x2dd4bf,
       transparent: true,
       opacity: 0.16
-    });
+    }));
 
     for (let index = 0; index < 7; index += 1) {
       const lane = new THREE.Mesh(new THREE.BoxGeometry(0.024, BOARD_HEIGHT - 1.25, 0.04), laneMaterial.clone());
@@ -341,16 +421,16 @@ export class BreakoutGame {
 
     const warning = new THREE.Mesh(
       new THREE.BoxGeometry(BOARD_WIDTH - 1.1, 0.04, 0.04),
-      new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.72 })
+      makeFadeableMaterial(new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.72 }))
     );
     warning.position.set(0, -7.35, -0.28);
     group.add(warning);
   }
 
-  private createWalls(group: THREE.Group): void {
-    const wallMaterial = new THREE.MeshBasicMaterial({
+  private createWalls(group: THREE.Group, splitGlowMeshes: SplitGlowMesh[]): void {
+    const wallMaterial = makeFadeableMaterial(new THREE.MeshBasicMaterial({
       color: 0x4d8f99
-    });
+    }));
     const walls = [
       { x: -HALF_WIDTH - WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
       { x: HALF_WIDTH + WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
@@ -361,6 +441,7 @@ export class BreakoutGame {
     for (const wall of walls) {
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(wall.width, wall.height, PADDLE_DEPTH), wallMaterial.clone());
       mesh.position.set(wall.x, wall.y, -0.04);
+      splitGlowMeshes.push(this.attachSplitGlow(mesh, 0x8ce9df, { baseScale: 1.02, pulseScale: 0.08 }));
       group.add(mesh);
     }
   }
@@ -368,26 +449,26 @@ export class BreakoutGame {
   private createPaddleMesh(): THREE.Mesh {
     return new THREE.Mesh(
       new THREE.BoxGeometry(PADDLE_WIDTH, PADDLE_HEIGHT, PADDLE_DEPTH),
-      new THREE.MeshStandardMaterial({
+      makeFadeableMaterial(new THREE.MeshStandardMaterial({
         color: PADDLE_COLOR,
         emissive: PADDLE_EMISSIVE,
         emissiveIntensity: PADDLE_BASE_EMISSIVE_INTENSITY,
         roughness: 0.32,
         metalness: 0.18
-      })
+      }))
     );
   }
 
   private createBallMesh(): THREE.Mesh {
     return new THREE.Mesh(
       new THREE.SphereGeometry(BALL_RADIUS, 32, 18),
-      new THREE.MeshStandardMaterial({
+      makeFadeableMaterial(new THREE.MeshStandardMaterial({
         color: 0xffffff,
         emissive: 0xffe5a8,
         emissiveIntensity: 0.4,
         roughness: 0.22,
         metalness: 0.08
-      })
+      }))
     );
   }
 
@@ -395,14 +476,44 @@ export class BreakoutGame {
     const isSplitter = brick.kind === 'splitter';
     const isAutopilot = brick.kind === 'autopilot';
     const isLife = brick.kind === 'life';
-    const material = new THREE.MeshStandardMaterial({
+    const material = makeFadeableMaterial(new THREE.MeshStandardMaterial({
       color: brick.color,
       emissive: brick.color,
       emissiveIntensity: isSplitter ? 0.7 : isAutopilot ? 0.62 : isLife ? 0.66 : 0.18 + brick.row * 0.018,
       roughness: isSplitter ? 0.24 : isAutopilot ? 0.3 : isLife ? 0.28 : 0.46,
       metalness: isSplitter ? 0.34 : isAutopilot ? 0.22 : isLife ? 0.24 : 0.12
-    });
+    }));
     return new THREE.Mesh(new THREE.BoxGeometry(brick.width, brick.height, BRICK_DEPTH), material);
+  }
+
+  private attachSplitGlow(
+    source: THREE.Mesh,
+    color: number,
+    options: { baseScale: number; pulseScale: number }
+  ): SplitGlowMesh {
+    const material = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false
+    });
+    const mesh = new THREE.Mesh(source.geometry.clone(), material);
+    mesh.frustumCulled = false;
+    mesh.visible = false;
+    mesh.renderOrder = 4;
+    mesh.userData.splitGlow = true;
+    mesh.scale.setScalar(options.baseScale);
+    source.add(mesh);
+
+    return {
+      mesh,
+      material,
+      baseScale: options.baseScale,
+      pulseScale: options.pulseScale
+    };
   }
 
   private attachInput(): void {
@@ -599,8 +710,8 @@ export class BreakoutGame {
     const pixelRatio = Math.min(window.devicePixelRatio, 2);
     const aspect = width / height;
     const fovRadians = THREE.MathUtils.degToRad(CAMERA_FOV);
-    const visualHeight = BOARD_HEIGHT + 1.2;
-    const visualWidth = BOARD_WIDTH + 1.4;
+    const visualHeight = BOARD_HEIGHT + 2.1;
+    const visualWidth = BOARD_WIDTH + 1.8;
 
     this.camera.aspect = aspect;
     this.cameraBaseDistance = Math.max(
@@ -612,19 +723,22 @@ export class BreakoutGame {
 
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
-    this.layoutGlobalHud();
   };
 
   private readonly tick = (time: number): void => {
     const frameTime = Math.max(0, (time - this.lastTime) / 1000);
     const delta = Math.min(frameTime, MAX_DT);
     this.lastTime = time;
+    this.stats?.begin();
+    this.updateGameSpeedTween(delta);
+    this.updatePlaneZTransitions(delta);
+    this.updateSplitBloom(delta);
     this.accumulator += delta;
 
     while (this.accumulator >= FIXED_STEP) {
       for (let index = 0; index < this.instances.length; index += 1) {
         const instance = this.instances[index];
-        if (this.autopilot && instance.isActive()) {
+        if (this.autopilot && !this.splitSequenceActive && instance.isActive()) {
           this.handleInstanceEvents(instance, instance.launchOrAdvance());
         }
 
@@ -638,14 +752,18 @@ export class BreakoutGame {
 
     this.syncViews(time / 1000);
     this.updateCamera(delta);
-    this.updateHud();
     this.updatePlaneHudBillboards();
     this.nebula?.system.update(delta);
     this.renderPipeline.render();
+    this.stats?.end();
     requestAnimationFrame(this.tick);
   };
 
   private launchOrAdvanceSelected(): void {
+    if (this.splitSequenceActive) {
+      return;
+    }
+
     const selected = this.instances[this.selectedIndex];
     if (!selected || !selected.isActive()) {
       return;
@@ -679,7 +797,7 @@ export class BreakoutGame {
       // }
 
       if (event.type === 'split') {
-        this.splitReality(event.snapshot);
+        this.queueSplitReality(instance, event.snapshot);
       }
 
       if (event.type === 'state-changed') {
@@ -704,19 +822,197 @@ export class BreakoutGame {
     return clamp(Math.exp(-excessDistance / SOUND_ATTENUATION_DISTANCE), SOUND_MIN_VOLUME, 1);
   }
 
-  private splitReality(snapshot: BreakoutoutoutSnapshot): void {
+  private queueSplitReality(source: BreakoutoutoutInstance, snapshot: BreakoutoutoutSnapshot): void {
+    this.pendingSplits.push({ source, snapshot });
+
+    if (!this.splitSequenceActive) {
+      this.startNextSplitSequence();
+    }
+  }
+
+  private startNextSplitSequence(): void {
+    const pending = this.pendingSplits.shift();
+    if (!pending) {
+      return;
+    }
+
+    this.splitSequenceActive = true;
+    this.tweenGameSpeed(0, SPLIT_GAME_SPEED_TWEEN_DURATION, () => {
+      this.spawnSplitReality(pending);
+    });
+  }
+
+  private spawnSplitReality(pending: PendingSplit): void {
+    const sourceView = this.views.get(pending.source);
+    const sourceIndex = this.instances.indexOf(pending.source);
+    const sourceZ = sourceView?.group.position.z ?? this.targetPlaneZForIndex(Math.max(0, sourceIndex));
     const clone = new BreakoutoutoutInstance(
       this.nextInstanceId,
-      createSplitRealitySnapshot(snapshot),
+      createSplitRealitySnapshot(pending.snapshot),
       { autopilot: this.autopilot }
     );
     this.nextInstanceId += 1;
-    this.addInstance(clone);
+    const view = this.addInstance(clone);
+    const targetZ = this.targetPlaneZForIndex(this.instances.indexOf(clone));
+    const startZ = sourceZ - SPLIT_PLANE_SPAWN_Z_OFFSET;
+    view.group.position.z = startZ;
+    this.triggerSplitBloom(clone, 1);
+    view.zTransition = {
+      from: startZ,
+      to: targetZ,
+      elapsed: 0,
+      duration: SPLIT_PLANE_TRAVEL_DURATION,
+      selectOnComplete: true
+    };
+  }
+
+  private tweenGameSpeed(to: number, duration: number, onComplete?: () => void): void {
+    this.gameSpeedTween = {
+      from: this.gameSpeed,
+      to: clamp(to, 0, 1),
+      elapsed: 0,
+      duration,
+      onComplete
+    };
+  }
+
+  private updateGameSpeedTween(delta: number): void {
+    if (!this.gameSpeedTween) {
+      return;
+    }
+
+    const tween = this.gameSpeedTween;
+    tween.elapsed += delta;
+    const progress = clamp(tween.elapsed / Math.max(tween.duration, 0.001), 0, 1);
+    this.setGameSpeed(lerp(tween.from, tween.to, easeInOutCubic(progress)));
+
+    if (progress < 1) {
+      return;
+    }
+
+    this.gameSpeedTween = null;
+    this.setGameSpeed(tween.to);
+    tween.onComplete?.();
+  }
+
+  private updatePlaneZTransitions(delta: number): void {
+    let shouldResumeAfterSplit = false;
+    let instanceToSelect: BreakoutoutoutInstance | null = null;
+
+    for (const view of this.views.values()) {
+      const transition = view.zTransition;
+      if (!transition) {
+        continue;
+      }
+
+      transition.elapsed += delta;
+      const progress = clamp(transition.elapsed / Math.max(transition.duration, 0.001), 0, 1);
+      view.group.position.z = lerp(transition.from, transition.to, easeOutCubic(progress));
+
+      if (progress < 1) {
+        continue;
+      }
+
+      view.group.position.z = transition.to;
+      view.zTransition = undefined;
+      shouldResumeAfterSplit = shouldResumeAfterSplit || transition.selectOnComplete;
+
+      if (transition.selectOnComplete) {
+        instanceToSelect = view.instance;
+      }
+    }
+
+    if (shouldResumeAfterSplit) {
+      if (instanceToSelect) {
+        this.selectInstance(this.instances.indexOf(instanceToSelect));
+      }
+
+      this.tweenGameSpeed(1, SPLIT_GAME_SPEED_TWEEN_DURATION, () => {
+        this.splitSequenceActive = false;
+        this.startNextSplitSequence();
+      });
+    }
+  }
+
+  private triggerSplitBloom(instance: BreakoutoutoutInstance, strength: number): void {
+    this.splitGlowActiveInstances.add(instance);
+    this.splitBloomPulses.push({
+      instance,
+      elapsed: 0,
+      duration: SPLIT_BLOOM_DURATION,
+      strength
+    });
+  }
+
+  private updateSplitBloom(delta: number): void {
+    if (this.splitBloomPulses.length === 0) {
+      if (this.splitGlowActiveInstances.size > 0) {
+        for (const instance of this.splitGlowActiveInstances) {
+          const view = this.views.get(instance);
+          if (view) {
+            this.updateSplitGlowIntensity(view, 0);
+          }
+        }
+        this.splitGlowActiveInstances.clear();
+      }
+      return;
+    }
+
+    const intensityByInstance = new Map<BreakoutoutoutInstance, number>();
+
+    for (let index = this.splitBloomPulses.length - 1; index >= 0; index -= 1) {
+      const pulse = this.splitBloomPulses[index];
+      pulse.elapsed += delta;
+      const progress = pulse.elapsed / pulse.duration;
+
+      if (progress >= 1) {
+        this.splitBloomPulses.splice(index, 1);
+        continue;
+      }
+
+      const currentIntensity = intensityByInstance.get(pulse.instance) ?? 0;
+      intensityByInstance.set(
+        pulse.instance,
+        currentIntensity + pulse.strength * splitBloomCurve(progress)
+      );
+    }
+
+    const completedInstances: BreakoutoutoutInstance[] = [];
+    for (const instance of this.splitGlowActiveInstances) {
+      const view = this.views.get(instance);
+      const hasActivePulse = intensityByInstance.has(instance);
+      if (view) {
+        this.updateSplitGlowIntensity(view, clamp(intensityByInstance.get(instance) ?? 0, 0, 1));
+      }
+
+      if (!hasActivePulse) {
+        completedInstances.push(instance);
+      }
+    }
+
+    for (const instance of completedInstances) {
+      this.splitGlowActiveInstances.delete(instance);
+    }
+  }
+
+  private updateSplitGlowIntensity(view: InstanceView, intensity: number): void {
+    for (const glow of view.splitGlowMeshes) {
+      const opacity = intensity * SPLIT_GLOW_BASE_OPACITY;
+      glow.material.opacity = opacity;
+      glow.mesh.visible = opacity > 0.002;
+      glow.mesh.scale.setScalar(glow.baseScale + glow.pulseScale * intensity);
+    }
+  }
+
+  private setGameSpeed(speed: number): void {
+    this.gameSpeed = clamp(speed, 0, 1);
+    for (const instance of this.instances) {
+      instance.setGameSpeed(this.gameSpeed);
+    }
   }
 
   private syncBallSpeedForAll(): void {
     const nextBallSpeedMultiplier = this.ballSpeedMultiplierForActiveGames(this.activeGameCount);
-    this.ballSpeedMultiplier = nextBallSpeedMultiplier;
     for (const instance of this.instances) {
       instance.setBallSpeedMultiplier(nextBallSpeedMultiplier);
     }
@@ -727,13 +1023,21 @@ export class BreakoutGame {
   }
 
   private get activeGameCount(): number {
-    const activeCount = this.instances.filter((instance) => instance.isActive()).length;
+    let activeCount = 0;
+    for (const instance of this.instances) {
+      if (instance.isActive()) {
+        activeCount += 1;
+      }
+    }
+
     return Math.max(1, activeCount);
   }
 
   private syncViews(time: number): void {
     for (const view of this.views.values()) {
-      this.syncInstanceView(view, view.instance.getRenderState(), time);
+      const state = view.instance.getRenderState();
+      view.renderState = state;
+      this.syncInstanceView(view, state, time);
     }
   }
 
@@ -741,17 +1045,22 @@ export class BreakoutGame {
     view.paddleMesh.position.set(state.paddleX, PADDLE_Y, 0.06);
     this.updatePaddleAutopilotEffect(view.paddleMesh, state.autoPilotActive, time);
     view.ballMesh.position.set(state.ball.x, state.ball.y, 0.18);
-    view.ballMesh.rotation.x += 0.05;
-    view.ballMesh.rotation.y += 0.075;
+    view.ballMesh.rotation.x += 0.05 * this.gameSpeed;
+    view.ballMesh.rotation.y += 0.075 * this.gameSpeed;
     view.group.rotation.x = Math.sin(time * 0.32 + state.id * 0.2) * 0.018;
+    this.updatePlaneCornerHud(view, state);
     this.updatePlaneStatusHud(view, state);
 
-    const activeBrickIds = new Set(state.bricks.filter((brick) => !brick.hit).map((brick) => brick.id));
+    view.activeBrickIds.clear();
+    for (const brick of state.bricks) {
+      if (!brick.hit) {
+        view.activeBrickIds.add(brick.id);
+      }
+    }
+
     for (const [id, mesh] of view.bricks) {
-      if (!activeBrickIds.has(id)) {
-        view.bricks.delete(id);
-        view.group.remove(mesh);
-        disposeObject(mesh);
+      if (!view.activeBrickIds.has(id)) {
+        this.removeBrickMesh(view, id, mesh);
       }
     }
 
@@ -764,16 +1073,52 @@ export class BreakoutGame {
       if (!mesh) {
         mesh = this.createBrickMesh(brick);
         view.bricks.set(brick.id, mesh);
+        view.splitGlowMeshes.push(this.attachSplitGlow(mesh, brick.color, {
+          baseScale: brick.kind === 'splitter' ? 1.18 : 1.12,
+          pulseScale: brick.kind === 'splitter' ? 0.62 : 0.38
+        }));
         view.group.add(mesh);
-        this.applyInstanceOpacity(view);
+        this.applyMeshOpacity(view, mesh);
       }
 
       mesh.position.set(brick.x, brick.y, Math.sin(time * 1.5 + brick.x * 0.7) * 0.035);
     }
   }
 
+  private removeBrickMesh(view: InstanceView, id: string, mesh: THREE.Mesh): void {
+    view.bricks.delete(id);
+    view.group.remove(mesh);
+    view.splitGlowMeshes = view.splitGlowMeshes.filter((entry) => entry.mesh.parent !== mesh);
+    disposeObject(mesh);
+  }
+
+  private updatePlaneCornerHud(view: InstanceView, state: BreakoutoutoutRenderState): void {
+    const topEdge = HALF_HEIGHT + WALL_THICKNESS;
+    const leftEdge = -HALF_WIDTH - WALL_THICKNESS;
+    const rightEdge = HALF_WIDTH + WALL_THICKNESS;
+    const selected = this.instances[this.selectedIndex] === view.instance;
+
+    view.scoreText.setText(state.score.toString().padStart(5, '0'));
+    this.scalePlaneHudText(view.scoreText, PLANE_SCORE_WORLD_HEIGHT, PLANE_SCORE_MAX_WIDTH);
+    view.scoreText.mesh.position.set(
+      leftEdge + view.scoreText.mesh.scale.x / 2,
+      topEdge + PLANE_CORNER_HUD_GAP + view.scoreText.mesh.scale.y / 2,
+      PLANE_CORNER_HUD_Z
+    );
+
+    view.hearts.setCount(state.lives);
+    this.scalePlaneHudPlane(view.hearts, PLANE_HEART_WORLD_HEIGHT, PLANE_HEART_MAX_WIDTH);
+    view.hearts.mesh.visible = selected && state.lives > 0;
+    view.hearts.mesh.position.set(
+      rightEdge - view.hearts.mesh.scale.x / 2,
+      topEdge + PLANE_CORNER_HUD_GAP + view.hearts.mesh.scale.y / 2,
+      PLANE_CORNER_HUD_Z
+    );
+  }
+
   private updatePlaneStatusHud(view: InstanceView, state: BreakoutoutoutRenderState): void {
-    const statusLabel = this.planeStatusLabel(state);
+    const selected = this.instances[this.selectedIndex] === view.instance;
+    const statusLabel = selected ? this.planeStatusLabel(state) : '';
     view.statusText.setText(statusLabel, 360);
     view.statusText.mesh.position.set(0, PLANE_STATUS_Y, PLANE_STATUS_Z);
 
@@ -791,20 +1136,19 @@ export class BreakoutGame {
         : 'autopilot mode';
     }
 
-    const phaseLabel = {
-      ready: 'READY',
-      playing: '',
-      'level-clear': 'CLEARED',
-      'game-over': 'GAME OVER'
-    } satisfies Record<typeof state.phase, string>;
-
-    return phaseLabel[state.phase];
+    return PHASE_STATUS_LABEL[state.phase];
   }
 
   private scalePlaneHudText(text: HudTextPlane, preferredHeight: number, maxWidth: number): void {
     const aspect = text.cssHeight > 0 ? text.cssWidth / text.cssHeight : 1;
     const height = Math.min(preferredHeight, maxWidth / Math.max(aspect, 0.001));
     text.mesh.scale.set(height * aspect, height, 1);
+  }
+
+  private scalePlaneHudPlane(plane: HudHeartsPlane, preferredHeight: number, maxWidth: number): void {
+    const aspect = plane.cssHeight > 0 ? plane.cssWidth / plane.cssHeight : 1;
+    const height = Math.min(preferredHeight, maxWidth / Math.max(aspect, 0.001));
+    plane.mesh.scale.set(height * aspect, height, 1);
   }
 
   private updatePaddleAutopilotEffect(mesh: THREE.Mesh, engaged: boolean, time: number): void {
@@ -831,13 +1175,17 @@ export class BreakoutGame {
     for (let index = 0; index < this.instances.length; index += 1) {
       const view = this.views.get(this.instances[index]);
       if (view) {
-        view.group.position.set(0, 0, -index * PLANE_Z_GAP);
+        view.group.position.set(0, 0, this.targetPlaneZForIndex(index));
       }
     }
 
     this.selectedIndex = clamp(this.selectedIndex, 0, Math.max(0, this.instances.length - 1));
     this.updateInstanceOpacity();
     this.resize();
+  }
+
+  private targetPlaneZForIndex(index: number): number {
+    return -index * PLANE_Z_GAP;
   }
 
   private selectInstance(index: number): void {
@@ -850,8 +1198,16 @@ export class BreakoutGame {
       return;
     }
 
+    const previousIndex = this.selectedIndex;
     this.selectedIndex = nextIndex;
-    this.updateInstanceOpacity();
+    const previousView = this.views.get(this.instances[previousIndex]);
+    const nextView = this.views.get(this.instances[nextIndex]);
+    if (previousView) {
+      this.applyInstanceOpacity(previousView);
+    }
+    if (nextView && nextView !== previousView) {
+      this.applyInstanceOpacity(nextView);
+    }
   }
 
   private updateInstanceOpacity(): void {
@@ -865,15 +1221,30 @@ export class BreakoutGame {
 
   private applyInstanceOpacity(view: InstanceView): void {
     const opacity = this.instances[this.selectedIndex] === view.instance ? SELECTED_OPACITY : BACKGROUND_OPACITY;
+    if (view.appliedOpacity === opacity) {
+      return;
+    }
+
+    view.appliedOpacity = opacity;
     view.group.traverse((object) => {
       if (object instanceof THREE.Mesh) {
-        setMaterialOpacity(object.material, opacity);
+        this.applyMeshOpacity(view, object);
       }
     });
   }
 
+  private applyMeshOpacity(view: InstanceView, mesh: THREE.Mesh): void {
+    if (mesh.userData.splitGlow === true) {
+      return;
+    }
+
+    const opacity = this.instances[this.selectedIndex] === view.instance ? SELECTED_OPACITY : BACKGROUND_OPACITY;
+    setMaterialOpacity(mesh.material, opacity);
+  }
+
   private updateCamera(delta: number): void {
-    const selectedState = this.instances[this.selectedIndex]?.getRenderState();
+    const selectedInstance = this.instances[this.selectedIndex];
+    const selectedState = selectedInstance ? this.views.get(selectedInstance)?.renderState : undefined;
     const ballX = selectedState ? clamp(selectedState.ball.x / HALF_WIDTH, -1, 1) : 0;
     const ballY = selectedState ? clamp(selectedState.ball.y / HALF_HEIGHT, -1, 1) : 0;
     const targetX = ballX * CAMERA_PARALLAX_X;
@@ -883,6 +1254,7 @@ export class BreakoutGame {
     this.cameraFocusX += (targetX - this.cameraFocusX) * blend;
     this.cameraFocusY += (targetY - this.cameraFocusY) * blend;
     this.cameraFocusZ += (focusZ - this.cameraFocusZ) * blend;
+
     this.camera.position.set(this.cameraFocusX, this.cameraFocusY, this.cameraFocusZ + this.cameraBaseDistance);
     this.camera.lookAt(0, 0, this.cameraFocusZ);
   }
@@ -892,6 +1264,12 @@ export class BreakoutGame {
 
     for (const view of this.views.values()) {
       view.group.getWorldQuaternion(this.planeHudParentQuaternion).invert();
+      view.scoreText.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
+      view.hearts.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
       view.statusText.mesh.quaternion
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
@@ -955,60 +1333,6 @@ export class BreakoutGame {
   //     system.removeEmitter(emitter);
   //   }, 1_100);
   // }
-
-  private updateHud(): void {
-    if (this.instances.length === 0) {
-      return;
-    }
-
-    const selected = this.instances[this.selectedIndex]?.getRenderState() ?? this.instances[0].getRenderState();
-    const margin = this.hudMargin();
-    this.scoreText.setText(`SCORE ${selected.score.toString().padStart(5, '0')}`);
-    this.livesText.setText(`LIVES ${selected.lives}`);
-    this.levelText.setText(`LEVEL ${selected.level}`);
-    this.realityText.setText(
-      `REALITY ${this.selectedIndex + 1}/${this.instances.length}  BALL ${Math.round(this.ballSpeedMultiplier * 100)}%`,
-      this.shell.clientWidth - margin * 2
-    );
-    this.layoutGlobalHud();
-  }
-
-  private layoutGlobalHud(): void {
-    const width = Math.max(1, this.shell.clientWidth);
-    const margin = this.hudMargin();
-    const stackedHud = width < 560;
-
-    this.layoutCameraHudText(this.scoreText, margin, margin, 0, 0);
-    this.layoutCameraHudText(this.livesText, width - margin, margin, 1, 0);
-    this.layoutCameraHudText(this.levelText, width / 2, stackedHud ? margin + 32 : margin + 2, 0.5, 0);
-    this.layoutCameraHudText(this.realityText, width / 2, stackedHud ? margin + 58 : margin + 30, 0.5, 0);
-  }
-
-  private layoutCameraHudText(text: HudTextPlane, x: number, y: number, anchorX: number, anchorY: number): void {
-    const width = Math.max(1, this.shell.clientWidth);
-    const height = Math.max(1, this.shell.clientHeight);
-    const viewHeight = 2 * Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV) / 2) * HUD_CAMERA_DEPTH;
-    const viewWidth = viewHeight * this.camera.aspect;
-    const centerX = x + (0.5 - anchorX) * text.cssWidth;
-    const centerY = y + (0.5 - anchorY) * text.cssHeight;
-
-    text.mesh.position.set(
-      (centerX / width - 0.5) * viewWidth,
-      (0.5 - centerY / height) * viewHeight,
-      0
-    );
-    text.mesh.scale.set(
-      (text.cssWidth / width) * viewWidth,
-      (text.cssHeight / height) * viewHeight,
-      1
-    );
-  }
-
-  private hudMargin(): number {
-    const width = Math.max(1, this.shell.clientWidth);
-    const height = Math.max(1, this.shell.clientHeight);
-    return Math.max(32, Math.min(width, height) * 0.045);
-  }
 
   private get currentInput(): BreakoutInput {
     const input: BreakoutInput = {
@@ -1204,6 +1528,91 @@ class HudTextPlane {
   }
 }
 
+type HudHeartsPlaneOptions = {
+  renderOrder: number;
+};
+
+class HudHeartsPlane {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private texture: THREE.CanvasTexture;
+  private lastCount = -1;
+
+  cssWidth = 1;
+  cssHeight = 1;
+
+  constructor(options: HudHeartsPlaneOptions) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create HUD hearts canvas.');
+    }
+
+    this.context = context;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.material.userData.forceTransparent = true;
+
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = options.renderOrder;
+    this.mesh.visible = false;
+  }
+
+  setCount(count: number): void {
+    const safeCount = Math.max(0, Math.floor(count));
+    if (safeCount === this.lastCount) {
+      return;
+    }
+
+    this.lastCount = safeCount;
+
+    const heartSize = 22;
+    const gap = 6;
+    const padding = 2;
+    const width = safeCount > 0 ? padding * 2 + safeCount * heartSize + (safeCount - 1) * gap : 1;
+    const height = safeCount > 0 ? padding * 2 + heartSize : 1;
+
+    this.cssWidth = width;
+    this.cssHeight = height;
+    this.resizeCanvas(Math.ceil(width * HUD_TEXTURE_SCALE), Math.ceil(height * HUD_TEXTURE_SCALE));
+
+    this.context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    this.context.clearRect(0, 0, width, height);
+
+    for (let index = 0; index < safeCount; index += 1) {
+      const x = padding + heartSize / 2 + index * (heartSize + gap);
+      drawHudHeart(this.context, x, padding + heartSize / 2, heartSize);
+    }
+
+    this.texture.needsUpdate = true;
+    this.mesh.visible = safeCount > 0;
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+}
+
 function createHudCanvasTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -1211,6 +1620,32 @@ function createHudCanvasTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture 
   texture.minFilter = THREE.LinearFilter;
   texture.magFilter = THREE.LinearFilter;
   return texture;
+}
+
+function drawHudHeart(context: CanvasRenderingContext2D, centerX: number, centerY: number, size: number): void {
+  const top = centerY - size * 0.28;
+  const bottom = centerY + size * 0.38;
+  const left = centerX - size * 0.42;
+  const right = centerX + size * 0.42;
+
+  context.save();
+  context.shadowColor = 'rgba(239, 68, 68, 0.55)';
+  context.shadowBlur = size * 0.16;
+  context.beginPath();
+  context.moveTo(centerX, bottom);
+  context.bezierCurveTo(left - size * 0.34, centerY + size * 0.02, left, top - size * 0.24, centerX, top + size * 0.1);
+  context.bezierCurveTo(right, top - size * 0.24, right + size * 0.34, centerY + size * 0.02, centerX, bottom);
+  context.closePath();
+  context.fillStyle = '#ef4444';
+  context.fill();
+
+  context.shadowBlur = 0;
+  context.globalAlpha = 0.42;
+  context.beginPath();
+  context.ellipse(centerX - size * 0.16, centerY - size * 0.16, size * 0.1, size * 0.06, -0.6, 0, Math.PI * 2);
+  context.fillStyle = '#fff1f2';
+  context.fill();
+  context.restore();
 }
 
 function roundedRectPath(
@@ -1246,18 +1681,23 @@ function setMaterialOpacity(material: THREE.Material | THREE.Material[], opacity
   setSingleMaterialOpacity(material, opacity);
 }
 
+function makeFadeableMaterial<T extends THREE.Material>(material: T): T {
+  material.userData.baseOpacity = typeof material.userData.baseOpacity === 'number'
+    ? material.userData.baseOpacity
+    : material.opacity;
+  material.transparent = true;
+  material.depthWrite = false;
+  return material;
+}
+
 function setSingleMaterialOpacity(material: THREE.Material, opacity: number): void {
   const baseOpacity = typeof material.userData.baseOpacity === 'number' ? material.userData.baseOpacity : material.opacity;
-  const nextOpacity = baseOpacity * opacity;
-  const forceTransparent = material.userData.forceTransparent === true;
-  const nextTransparent = forceTransparent || nextOpacity < 0.999;
-  const nextDepthWrite = !forceTransparent && nextOpacity >= 0.999;
-  const renderStateChanged = material.transparent !== nextTransparent || material.depthWrite !== nextDepthWrite;
+  const renderStateChanged = !material.transparent || material.depthWrite;
 
   material.userData.baseOpacity = baseOpacity;
-  material.opacity = nextOpacity;
-  material.transparent = nextTransparent;
-  material.depthWrite = nextDepthWrite;
+  material.opacity = baseOpacity * opacity;
+  material.transparent = true;
+  material.depthWrite = false;
 
   if (renderStateChanged) {
     material.needsUpdate = true;
@@ -1282,6 +1722,28 @@ function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   }
 
   material.dispose();
+}
+
+function lerp(from: number, to: number, amount: number): number {
+  return from + (to - from) * amount;
+}
+
+function easeInOutCubic(value: number): number {
+  return value < 0.5
+    ? 4 * value * value * value
+    : 1 - Math.pow(-2 * value + 2, 3) / 2;
+}
+
+function easeOutCubic(value: number): number {
+  return 1 - Math.pow(1 - value, 3);
+}
+
+function splitBloomCurve(progress: number): number {
+  if (progress < 0.18) {
+    return easeOutCubic(progress / 0.18);
+  }
+
+  return Math.pow(1 - (progress - 0.18) / 0.82, 1.7);
 }
 
 function clamp(value: number, min: number, max: number): number {

@@ -58,5 +58,5 @@ When working with the dev server, use this project's default `npm run dev` serve
 - Dispose removed Three.js meshes/materials with the existing cleanup helpers when changing render object lifecycles.
 - Be careful with browser APIs that require user gestures, especially audio. Sound is generated and preloaded through `SoundBank`.
 - Keep the HUD in PixiJS unless the task explicitly changes the rendering architecture.
-- For frontend changes, verify both desktop and narrow/mobile viewport behavior. The game shell is fixed full-screen and should not scroll.
+- For frontend changes, a standard desktop browser check is enough when visual verification is needed. Only do extra viewport sizes when the change specifically affects responsive layout, touch behavior, or mobile sizing. The game shell is fixed full-screen and should not scroll.
 - Avoid introducing server-side assumptions; the app is static Vite output.
