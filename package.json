@@ -1,0 +1,25 @@
+{
+  "name": "breakoutoutout",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.29.2",
+    "@dimforge/rapier3d-compat": "^0.19.3",
+    "howler": "^2.2.4",
+    "pixi.js": "^8.18.1",
+    "three": "^0.122.0",
+    "three-nebula": "^10.0.3"
+  },
+  "devDependencies": {
+    "@types/howler": "^2.2.12",
+    "@types/three": "^0.184.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.13"
+  }
+}
