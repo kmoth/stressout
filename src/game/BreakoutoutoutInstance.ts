@@ -123,6 +123,7 @@ export class BreakoutoutoutInstance {
   private paddleCollider!: Collider;
   private ballBody!: RigidBody;
   private ballCollider!: Collider;
+  private floorCollider!: Collider;
   private bricks: Brick[] = [];
   private score = 0;
   private lives = 3;
@@ -175,8 +176,9 @@ export class BreakoutoutoutInstance {
       this.autoPilotRemaining = Math.max(0, this.autoPilotRemaining - delta);
     }
     events.push(...this.resolveCollisions());
-    this.keepBallPlanar();
-    events.push(...this.checkBallLoss());
+    if (this.phase === 'playing') {
+      this.keepBallPlanar();
+    }
     return events;
   }
 
@@ -317,18 +319,23 @@ export class BreakoutoutoutInstance {
     const walls = [
       { x: -HALF_WIDTH - WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
       { x: HALF_WIDTH + WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
-      { x: 0, y: HALF_HEIGHT + WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS }
+      { x: 0, y: HALF_HEIGHT + WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS },
+      { x: 0, y: -HALF_HEIGHT - WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS, isFloor: true }
     ];
 
     for (const wall of walls) {
       const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(wall.x, wall.y, 0));
-      this.world.createCollider(
+      const collider = this.world.createCollider(
         RAPIER.ColliderDesc.cuboid(wall.width / 2, wall.height / 2, PADDLE_DEPTH / 2)
           .setRestitution(1)
           .setFriction(0)
           .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS),
         body
       );
+
+      if (wall.isFloor) {
+        this.floorCollider = collider;
+      }
     }
   }
 
@@ -406,6 +413,7 @@ export class BreakoutoutoutInstance {
     const bricksToRemove = new Set<Brick>();
     let touchedPaddle = false;
     let touchedWall = false;
+    let touchedFloor = false;
 
     this.eventQueue.drainCollisionEvents((handleA: number, handleB: number, started: boolean) => {
       if (!started) {
@@ -424,12 +432,18 @@ export class BreakoutoutoutInstance {
         return;
       }
 
-      if (otherHandle === this.paddleCollider.handle) {
+      if (otherHandle === this.floorCollider.handle) {
+        touchedFloor = true;
+      } else if (otherHandle === this.paddleCollider.handle) {
         touchedPaddle = true;
       } else {
         touchedWall = true;
       }
     });
+
+    if (touchedFloor) {
+      return this.loseLife();
+    }
 
     if (touchedPaddle) {
       this.applyPaddleBounce();
@@ -542,12 +556,7 @@ export class BreakoutoutoutInstance {
     );
   }
 
-  private checkBallLoss(): BreakoutoutoutEvent[] {
-    const ballPosition = this.ballBody.translation();
-    if (ballPosition.y > -HALF_HEIGHT - 0.8) {
-      return [];
-    }
-
+  private loseLife(): BreakoutoutoutEvent[] {
     this.lives -= 1;
     this.phase = this.lives > 0 ? 'ready' : 'game-over';
     this.autoPilotRemaining = 0;

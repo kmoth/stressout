@@ -1,10 +1,10 @@
 import RAPIER from '@dimforge/rapier3d-compat';
-import { Application, Container, Graphics, Text } from 'pixi.js';
-import * as THREE from 'three';
-// import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import * as THREE from 'three/webgpu';
+import { posterize, replaceDefaultUV, screenSize, uniform } from 'three/tsl';
+import { barrelUV, colorBleeding, scanlines, vignette } from 'three/examples/jsm/tsl/display/CRT.js';
+import { retroPass } from 'three/examples/jsm/tsl/display/RetroPassNode.js';
+import { circle } from 'three/examples/jsm/tsl/display/Shape.js';
+import { bayerDither } from 'three/examples/jsm/tsl/math/Bayer.js';
 import System, {
   Alpha,
   Body,
@@ -55,14 +55,15 @@ const CAMERA_DISTANCE_PADDING = 1.24;
 const CAMERA_ELEVATION = 0;
 const CAMERA_PARALLAX_X = 1.64;
 const CAMERA_PARALLAX_Y = 1.12;
-// const DEPTH_OF_FIELD_APERTURE = 0.0022;
-// const DEPTH_OF_FIELD_MAX_BLUR = 0.0045;
 const RETRO_PIXEL_SIZE = 3;
 const RETRO_COLOR_LEVELS = 7;
 const RETRO_SCANLINE_STRENGTH = 0.16;
+const RETRO_SCANLINE_DENSITY = 1;
+const RETRO_SCANLINE_SPEED = 0;
 const RETRO_VIGNETTE_STRENGTH = 0.36;
-const RETRO_NOISE_STRENGTH = 0.032;
-const RETRO_CHROMA_OFFSET = 1.15;
+const RETRO_COLOR_BLEEDING = 0.00115;
+const RETRO_BARREL_CURVATURE = 0.02;
+const RETRO_AFFINE_DISTORTION = 0;
 const TOUCH_SWIPE_MIN_DISTANCE = 44;
 const TOUCH_SWIPE_AXIS_RATIO = 1.15;
 const SELECTED_OPACITY = 1;
@@ -74,6 +75,15 @@ const PADDLE_EMISSIVE = 0x1fbfb1;
 const PADDLE_AUTOPILOT_COLOR = 0xeafffb;
 const PADDLE_AUTOPILOT_EMISSIVE = 0x34d399;
 const PADDLE_BASE_EMISSIVE_INTENSITY = 0.28;
+const HUD_CAMERA_DEPTH = 4;
+const HUD_TEXTURE_SCALE = 2;
+const HUD_FONT_FAMILY = 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+const GLOBAL_HUD_RENDER_ORDER = 100;
+const PLANE_HUD_RENDER_ORDER = 80;
+const PLANE_STATUS_WORLD_HEIGHT = 1.35;
+const PLANE_STATUS_MAX_WIDTH = BOARD_WIDTH - 1.2;
+const PLANE_STATUS_Y = -1.05;
+const PLANE_STATUS_Z = 0.88;
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
 
 type NebulaRuntime = {
@@ -102,93 +112,18 @@ type InstanceView = {
   paddleMesh: THREE.Mesh;
   ballMesh: THREE.Mesh;
   bricks: Map<string, THREE.Mesh>;
-};
-
-// type BokehUniforms = {
-//   focus: { value: number };
-//   aspect: { value: number };
-// };
-
-type RetroUniforms = {
-  resolution: { value: THREE.Vector2 };
-  time: { value: number };
-  pixelSize: { value: number };
+  statusText: HudTextPlane;
 };
 
 export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot'>;
-
-const RETRO_SHADER = {
-  uniforms: {
-    tDiffuse: { value: null },
-    resolution: { value: new THREE.Vector2(1, 1) },
-    time: { value: 0 },
-    pixelSize: { value: RETRO_PIXEL_SIZE },
-    colorLevels: { value: RETRO_COLOR_LEVELS },
-    scanlineStrength: { value: RETRO_SCANLINE_STRENGTH },
-    vignetteStrength: { value: RETRO_VIGNETTE_STRENGTH },
-    noiseStrength: { value: RETRO_NOISE_STRENGTH },
-    chromaOffset: { value: RETRO_CHROMA_OFFSET }
-  },
-  vertexShader: `
-    varying vec2 vUv;
-
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: `
-    uniform sampler2D tDiffuse;
-    uniform vec2 resolution;
-    uniform float time;
-    uniform float pixelSize;
-    uniform float colorLevels;
-    uniform float scanlineStrength;
-    uniform float vignetteStrength;
-    uniform float noiseStrength;
-    uniform float chromaOffset;
-    varying vec2 vUv;
-
-    float hash(vec2 p) {
-      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-    }
-
-    void main() {
-      vec2 safeResolution = max(resolution, vec2(1.0));
-      vec2 pixelUv = floor(vUv * safeResolution / pixelSize) * pixelSize / safeResolution;
-      vec2 chroma = vec2(chromaOffset, 0.0) / safeResolution;
-
-      float r = texture2D(tDiffuse, pixelUv + chroma).r;
-      float g = texture2D(tDiffuse, pixelUv).g;
-      float b = texture2D(tDiffuse, pixelUv - chroma).b;
-      vec3 color = vec3(r, g, b);
-
-      color = pow(color, vec3(0.92));
-      color = floor(color * colorLevels) / colorLevels;
-      color = mix(color, color * vec3(1.08, 0.96, 0.82), 0.18);
-
-      float scanline = 0.5 + 0.5 * sin(vUv.y * safeResolution.y * 3.14159265);
-      color *= 1.0 - scanlineStrength * scanline;
-
-      float vignette = smoothstep(0.92, 0.48, distance(vUv, vec2(0.5)));
-      color *= mix(1.0 - vignetteStrength, 1.0, vignette);
-
-      float noise = hash(floor(vUv * safeResolution / pixelSize) + time * 60.0) - 0.5;
-      color += noise * noiseStrength;
-
-      gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
-    }
-  `
-};
 
 export class BreakoutGame {
   private readonly shell: HTMLDivElement;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 180);
-  private readonly renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  private readonly composer: EffectComposer;
-  private readonly retroPass: ShaderPass;
-  // private readonly bokehPass: BokehPass;
+  private readonly renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
+  private readonly renderPipeline: THREE.RenderPipeline;
+  private readonly retroScenePass: ReturnType<typeof retroPass>;
   private readonly sound = new SoundBank();
   private readonly keys = new Set<string>();
   private readonly pointerRaycaster = new THREE.Raycaster();
@@ -199,22 +134,19 @@ export class BreakoutGame {
   private readonly pointerBoardHit = new THREE.Vector3();
   private readonly pointerLocalHit = new THREE.Vector3();
   private readonly pointerBoardQuaternion = new THREE.Quaternion();
+  private readonly planeHudParentQuaternion = new THREE.Quaternion();
+  private readonly planeHudCameraQuaternion = new THREE.Quaternion();
+  private readonly globalHudGroup = new THREE.Group();
+  private readonly scoreText = new HudTextPlane({ fontSize: 22, fill: '#f4f9f8', renderOrder: GLOBAL_HUD_RENDER_ORDER });
+  private readonly livesText = new HudTextPlane({ fontSize: 22, fill: '#f4f9f8', renderOrder: GLOBAL_HUD_RENDER_ORDER });
+  private readonly levelText = new HudTextPlane({ fontSize: 18, fill: '#f0c95d', renderOrder: GLOBAL_HUD_RENDER_ORDER });
+  private readonly realityText = new HudTextPlane({ fontSize: 16, fill: '#8ce9df', renderOrder: GLOBAL_HUD_RENDER_ORDER });
   // private readonly particleTexture: THREE.CanvasTexture;
   private readonly autopilot: boolean;
-  // private readonly cameraFocusTarget = new THREE.Vector3();
   private readonly instanceSoundPosition = new THREE.Vector3();
-  private readonly retroResolution = new THREE.Vector2(1, 1);
   private readonly instances: BreakoutoutoutInstance[] = [];
   private readonly views = new Map<BreakoutoutoutInstance, InstanceView>();
 
-  private pixi!: Application;
-  private hudLayer!: Container;
-  private scoreText!: Text;
-  private livesText!: Text;
-  private levelText!: Text;
-  private realityText!: Text;
-  private phaseText!: Text;
-  private badge!: Graphics;
   private nebula: NebulaRuntime | null = null;
   private accumulator = 0;
   private lastTime = performance.now();
@@ -242,20 +174,14 @@ export class BreakoutGame {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x07080b, 0);
     this.shell.appendChild(this.renderer.domElement);
+    this.scene.add(this.camera);
+    this.createThreeHud();
 
-    this.composer = new EffectComposer(this.renderer);
-    this.retroPass = new ShaderPass(RETRO_SHADER);
-    // this.bokehPass = new BokehPass(this.scene, this.camera, {
-    //   focus: this.cameraBaseDistance,
-    //   aspect: 1,
-    //   aperture: DEPTH_OF_FIELD_APERTURE,
-    //   maxblur: DEPTH_OF_FIELD_MAX_BLUR,
-    //   width: 1,
-    //   height: 1
-    // });
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.composer.addPass(this.retroPass);
-    // this.composer.addPass(this.bokehPass);
+    this.retroScenePass = retroPass(this.scene, this.camera, {
+      affineDistortion: uniform(RETRO_AFFINE_DISTORTION)
+    });
+    this.retroScenePass.setResolutionScale(1 / RETRO_PIXEL_SIZE);
+    this.renderPipeline = new THREE.RenderPipeline(this.renderer, this.createRetroPipeline(this.retroScenePass));
 
     // this.particleTexture = createParticleTexture();
     this.createLighting();
@@ -263,10 +189,33 @@ export class BreakoutGame {
     this.resize();
   }
 
+  private createRetroPipeline(scenePass: ReturnType<typeof retroPass>): THREE.Node {
+    const colorLevels = uniform(RETRO_COLOR_LEVELS);
+    const scanlineStrength = uniform(RETRO_SCANLINE_STRENGTH);
+    const vignetteStrength = uniform(RETRO_VIGNETTE_STRENGTH);
+    const colorBleed = uniform(RETRO_COLOR_BLEEDING);
+    const curvature = uniform(RETRO_BARREL_CURVATURE);
+    const distortedUv = barrelUV(curvature);
+    const distortedDelta = circle(curvature.add(0.1).mul(10), 1).mul(curvature).mul(0.05);
+    const warpedPass = replaceDefaultUV(distortedUv, scenePass);
+    const bled = colorBleeding(warpedPass, colorBleed.add(distortedDelta));
+    const dithered = bayerDither(bled, colorLevels);
+    const quantized = posterize(dithered, colorLevels);
+    const vignetted = vignette(quantized, vignetteStrength, 0.48, distortedUv);
+
+    return scanlines(
+      vignetted,
+      scanlineStrength,
+      screenSize.y.mul(RETRO_SCANLINE_DENSITY),
+      uniform(RETRO_SCANLINE_SPEED),
+      distortedUv
+    );
+  }
+
   static async create(root: HTMLElement, options: BreakoutGameOptions = {}): Promise<BreakoutGame> {
     await RAPIER.init();
     const game = new BreakoutGame(root, options);
-    await game.createPixiHud();
+    await game.renderer.init();
     game.createNebulaSystem();
     game.addInstance(new BreakoutoutoutInstance(game.nextInstanceId, undefined, { autopilot: game.autopilot }));
     game.nextInstanceId += 1;
@@ -275,53 +224,17 @@ export class BreakoutGame {
     return game;
   }
 
-  private async createPixiHud(): Promise<void> {
-    this.pixi = new Application();
-    await this.pixi.init({
-      resizeTo: this.shell,
-      backgroundAlpha: 0,
-      antialias: true,
-      resolution: Math.min(window.devicePixelRatio, 2),
-      autoDensity: true
-    });
-
-    this.pixi.canvas.className = 'pixi-layer';
-    this.shell.appendChild(this.pixi.canvas);
-
-    this.hudLayer = new Container();
-    this.pixi.stage.addChild(this.hudLayer);
-
-    this.badge = new Graphics();
-    this.hudLayer.addChild(this.badge);
-
-    this.scoreText = this.makeHudText(22, 0xf4f9f8);
-    this.livesText = this.makeHudText(22, 0xf4f9f8);
-    this.levelText = this.makeHudText(18, 0xf0c95d);
-    this.realityText = this.makeHudText(16, 0x8ce9df);
-    this.phaseText = this.makeHudText(44, 0xffffff, 'bold');
-    this.phaseText.anchor.set(0.5);
-
-    this.hudLayer.addChild(
-      this.scoreText,
-      this.livesText,
-      this.levelText,
-      this.realityText,
-      this.phaseText
+  private createThreeHud(): void {
+    this.globalHudGroup.name = 'Global HUD';
+    this.globalHudGroup.position.z = -HUD_CAMERA_DEPTH;
+    this.globalHudGroup.renderOrder = GLOBAL_HUD_RENDER_ORDER;
+    this.globalHudGroup.add(
+      this.scoreText.mesh,
+      this.livesText.mesh,
+      this.levelText.mesh,
+      this.realityText.mesh
     );
-    this.layoutHud();
-  }
-
-  private makeHudText(size: number, fill: number, fontWeight: 'normal' | 'bold' = 'bold'): Text {
-    return new Text({
-      text: '',
-      style: {
-        fill,
-        fontFamily: 'Inter, system-ui, sans-serif',
-        fontSize: size,
-        fontWeight,
-        letterSpacing: 0
-      }
-    });
+    this.camera.add(this.globalHudGroup);
   }
 
   private createNebulaSystem(): void {
@@ -374,15 +287,32 @@ export class BreakoutGame {
     const group = new THREE.Group();
     const paddleMesh = this.createPaddleMesh();
     const ballMesh = this.createBallMesh();
+    const statusText = this.createPlaneStatusText();
     const bricks = new Map<string, THREE.Mesh>();
 
-    // this.createBackboard(group);
     this.createWalls(group);
-    group.add(paddleMesh, ballMesh);
+    group.add(paddleMesh, ballMesh, statusText.mesh);
 
-    const view: InstanceView = { instance, group, paddleMesh, ballMesh, bricks };
+    const view: InstanceView = { instance, group, paddleMesh, ballMesh, bricks, statusText };
     this.syncInstanceView(view, state, 0);
     return view;
+  }
+
+  private createPlaneStatusText(): HudTextPlane {
+    return new HudTextPlane({
+      fontSize: 44,
+      fill: '#ffffff',
+      weight: 'bold',
+      paddingX: 28,
+      paddingY: 14,
+      minWidth: 190,
+      minHeight: 78,
+      background: 'rgba(7, 8, 11, 0.68)',
+      border: 'rgba(240, 201, 93, 0.86)',
+      borderWidth: 1,
+      radius: 8,
+      renderOrder: PLANE_HUD_RENDER_ORDER
+    });
   }
 
   createBackboard(group: THREE.Group): void {
@@ -418,16 +348,14 @@ export class BreakoutGame {
   }
 
   private createWalls(group: THREE.Group): void {
-    const wallMaterial = new THREE.MeshStandardMaterial({
-      color: 0x22323a,
-      emissive: 0x10292a,
-      roughness: 0.5,
-      metalness: 0.2
+    const wallMaterial = new THREE.MeshBasicMaterial({
+      color: 0x4d8f99
     });
     const walls = [
       { x: -HALF_WIDTH - WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
       { x: HALF_WIDTH + WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
-      { x: 0, y: HALF_HEIGHT + WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS }
+      { x: 0, y: HALF_HEIGHT + WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS },
+      { x: 0, y: -HALF_HEIGHT - WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS }
     ];
 
     for (const wall of walls) {
@@ -489,6 +417,17 @@ export class BreakoutGame {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    const isOneShotKey = event.code === 'ArrowUp'
+      || event.code === 'ArrowDown'
+      || event.code === 'Space'
+      || event.code === 'Enter'
+      || event.code === 'KeyR';
+
+    if (event.repeat && isOneShotKey) {
+      event.preventDefault();
+      return;
+    }
+
     if (event.code === 'ArrowUp') {
       event.preventDefault();
       this.selectInstance(this.selectedIndex + 1);
@@ -673,16 +612,12 @@ export class BreakoutGame {
 
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
-    this.composer.setPixelRatio(pixelRatio);
-    this.composer.setSize(width, height);
-    // this.resizeDepthOfField(width, height, pixelRatio);
-    this.resizeRetroPass(width, height, pixelRatio);
-    this.pixi?.renderer.resize(width, height);
-    this.layoutHud();
+    this.layoutGlobalHud();
   };
 
   private readonly tick = (time: number): void => {
-    const delta = Math.min((time - this.lastTime) / 1000, MAX_DT);
+    const frameTime = Math.max(0, (time - this.lastTime) / 1000);
+    const delta = Math.min(frameTime, MAX_DT);
     this.lastTime = time;
     this.accumulator += delta;
 
@@ -704,21 +639,19 @@ export class BreakoutGame {
     this.syncViews(time / 1000);
     this.updateCamera(delta);
     this.updateHud();
+    this.updatePlaneHudBillboards();
     this.nebula?.system.update(delta);
-    this.updateRetroPass(time / 1000);
-    this.composer.render(delta);
+    this.renderPipeline.render();
     requestAnimationFrame(this.tick);
   };
 
   private launchOrAdvanceSelected(): void {
     const selected = this.instances[this.selectedIndex];
     if (!selected || !selected.isActive()) {
-      this.updateHud();
       return;
     }
 
     this.handleInstanceEvents(selected, selected.launchOrAdvance());
-    this.updateHud();
   }
 
   private restartSelected(): void {
@@ -726,7 +659,6 @@ export class BreakoutGame {
     if (selected?.isActive()) {
       this.handleInstanceEvents(selected, selected.restart());
     }
-    this.updateHud();
   }
 
   private handleInstanceEvents(instance: BreakoutoutoutInstance, events: BreakoutoutoutEvent[]): void {
@@ -758,8 +690,6 @@ export class BreakoutGame {
     if (shouldSyncBallSpeed) {
       this.syncBallSpeedForAll();
     }
-
-    this.updateHud();
   }
 
   private volumeForInstance(instance: BreakoutoutoutInstance): number {
@@ -801,11 +731,6 @@ export class BreakoutGame {
     return Math.max(1, activeCount);
   }
 
-  private get allActivePlanesCleared(): boolean {
-    return this.instances.some((instance) => instance.isCleared())
-      && this.instances.every((instance) => !instance.isActive());
-  }
-
   private syncViews(time: number): void {
     for (const view of this.views.values()) {
       this.syncInstanceView(view, view.instance.getRenderState(), time);
@@ -819,6 +744,7 @@ export class BreakoutGame {
     view.ballMesh.rotation.x += 0.05;
     view.ballMesh.rotation.y += 0.075;
     view.group.rotation.x = Math.sin(time * 0.32 + state.id * 0.2) * 0.018;
+    this.updatePlaneStatusHud(view, state);
 
     const activeBrickIds = new Set(state.bricks.filter((brick) => !brick.hit).map((brick) => brick.id));
     for (const [id, mesh] of view.bricks) {
@@ -844,6 +770,41 @@ export class BreakoutGame {
 
       mesh.position.set(brick.x, brick.y, Math.sin(time * 1.5 + brick.x * 0.7) * 0.035);
     }
+  }
+
+  private updatePlaneStatusHud(view: InstanceView, state: BreakoutoutoutRenderState): void {
+    const statusLabel = this.planeStatusLabel(state);
+    view.statusText.setText(statusLabel, 360);
+    view.statusText.mesh.position.set(0, PLANE_STATUS_Y, PLANE_STATUS_Z);
+
+    if (statusLabel.length === 0) {
+      return;
+    }
+
+    this.scalePlaneHudText(view.statusText, PLANE_STATUS_WORLD_HEIGHT, PLANE_STATUS_MAX_WIDTH);
+  }
+
+  private planeStatusLabel(state: BreakoutoutoutRenderState): string {
+    if (state.autoPilotActive) {
+      return state.autoPilotRemaining > 0
+        ? `autopilot mode ${Math.ceil(state.autoPilotRemaining)}s`
+        : 'autopilot mode';
+    }
+
+    const phaseLabel = {
+      ready: 'READY',
+      playing: '',
+      'level-clear': 'CLEARED',
+      'game-over': 'GAME OVER'
+    } satisfies Record<typeof state.phase, string>;
+
+    return phaseLabel[state.phase];
+  }
+
+  private scalePlaneHudText(text: HudTextPlane, preferredHeight: number, maxWidth: number): void {
+    const aspect = text.cssHeight > 0 ? text.cssWidth / text.cssHeight : 1;
+    const height = Math.min(preferredHeight, maxWidth / Math.max(aspect, 0.001));
+    text.mesh.scale.set(height * aspect, height, 1);
   }
 
   private updatePaddleAutopilotEffect(mesh: THREE.Mesh, engaged: boolean, time: number): void {
@@ -884,9 +845,13 @@ export class BreakoutGame {
       return;
     }
 
-    this.selectedIndex = clamp(index, 0, this.instances.length - 1);
+    const nextIndex = clamp(index, 0, this.instances.length - 1);
+    if (nextIndex === this.selectedIndex) {
+      return;
+    }
+
+    this.selectedIndex = nextIndex;
     this.updateInstanceOpacity();
-    this.updateHud();
   }
 
   private updateInstanceOpacity(): void {
@@ -920,28 +885,17 @@ export class BreakoutGame {
     this.cameraFocusZ += (focusZ - this.cameraFocusZ) * blend;
     this.camera.position.set(this.cameraFocusX, this.cameraFocusY, this.cameraFocusZ + this.cameraBaseDistance);
     this.camera.lookAt(0, 0, this.cameraFocusZ);
-    // this.updateDepthOfFieldFocus();
   }
 
-  // private resizeDepthOfField(width: number, height: number, pixelRatio: number): void {
-  //   this.bokehPass.renderTargetDepth.setSize(width * pixelRatio, height * pixelRatio);
-  //   (this.bokehPass.uniforms as BokehUniforms).aspect.value = this.camera.aspect;
-  // }
+  private updatePlaneHudBillboards(): void {
+    this.camera.getWorldQuaternion(this.planeHudCameraQuaternion);
 
-  // private updateDepthOfFieldFocus(): void {
-  //   this.cameraFocusTarget.set(0, 0, this.cameraFocusZ);
-  //   (this.bokehPass.uniforms as BokehUniforms).focus.value = this.camera.position.distanceTo(this.cameraFocusTarget);
-  // }
-
-  private resizeRetroPass(width: number, height: number, pixelRatio: number): void {
-    const uniforms = this.retroPass.uniforms as unknown as RetroUniforms;
-    this.retroResolution.set(width * pixelRatio, height * pixelRatio);
-    uniforms.resolution.value.copy(this.retroResolution);
-    uniforms.pixelSize.value = RETRO_PIXEL_SIZE * pixelRatio;
-  }
-
-  private updateRetroPass(time: number): void {
-    (this.retroPass.uniforms as unknown as RetroUniforms).time.value = time;
+    for (const view of this.views.values()) {
+      view.group.getWorldQuaternion(this.planeHudParentQuaternion).invert();
+      view.statusText.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
+    }
   }
 
   // private burst(instance: BreakoutoutoutInstance, x: number, y: number, color: number, kind: BrickKind): void {
@@ -1003,61 +957,57 @@ export class BreakoutGame {
   // }
 
   private updateHud(): void {
-    if (!this.scoreText || this.instances.length === 0) {
+    if (this.instances.length === 0) {
       return;
     }
 
     const selected = this.instances[this.selectedIndex]?.getRenderState() ?? this.instances[0].getRenderState();
-    this.scoreText.text = `SCORE ${selected.score.toString().padStart(5, '0')}`;
-    this.livesText.text = `LIVES ${selected.lives}`;
-    this.levelText.text = `LEVEL ${selected.level}`;
-    const autoPilotLabel = selected.autoPilotActive
-      ? selected.autoPilotRemaining > 0
-        ? `  AUTO ${Math.ceil(selected.autoPilotRemaining)}s`
-        : '  AUTO'
-      : '';
-    this.realityText.text = `REALITY ${this.selectedIndex + 1}/${this.instances.length}  BALL ${Math.round(this.ballSpeedMultiplier * 100)}%${autoPilotLabel}`;
-
-    const phaseLabel = {
-      ready: 'READY',
-      playing: '',
-      'level-clear': this.allActivePlanesCleared ? 'ALL CLEAR' : 'PLANE CLEAR',
-      'game-over': 'GAME OVER'
-    } satisfies Record<typeof selected.phase, string>;
-    this.phaseText.text = selected.autoPilotActive ? 'autopilot mode' : phaseLabel[selected.phase];
-    this.phaseText.visible = this.phaseText.text.length > 0;
-    this.badge.visible = this.phaseText.visible;
-    this.layoutHud();
+    const margin = this.hudMargin();
+    this.scoreText.setText(`SCORE ${selected.score.toString().padStart(5, '0')}`);
+    this.livesText.setText(`LIVES ${selected.lives}`);
+    this.levelText.setText(`LEVEL ${selected.level}`);
+    this.realityText.setText(
+      `REALITY ${this.selectedIndex + 1}/${this.instances.length}  BALL ${Math.round(this.ballSpeedMultiplier * 100)}%`,
+      this.shell.clientWidth - margin * 2
+    );
+    this.layoutGlobalHud();
   }
 
-  private layoutHud(): void {
-    if (!this.scoreText || !this.pixi) {
-      return;
-    }
-
-    const width = this.pixi.renderer.width;
-    const height = this.pixi.renderer.height;
-    const margin = Math.max(18, Math.min(width, height) * 0.035);
+  private layoutGlobalHud(): void {
+    const width = Math.max(1, this.shell.clientWidth);
+    const margin = this.hudMargin();
     const stackedHud = width < 560;
 
-    this.scoreText.anchor.set(0, 0);
-    this.scoreText.position.set(margin, margin);
-    this.livesText.anchor.set(1, 0);
-    this.livesText.position.set(width - margin, margin);
-    this.levelText.anchor.set(0.5, 0);
-    this.levelText.position.set(width / 2, stackedHud ? margin + 32 : margin + 2);
-    this.realityText.anchor.set(0.5, 0);
-    this.realityText.position.set(width / 2, stackedHud ? margin + 58 : margin + 30);
-    this.phaseText.position.set(width / 2, height * 0.56);
+    this.layoutCameraHudText(this.scoreText, margin, margin, 0, 0);
+    this.layoutCameraHudText(this.livesText, width - margin, margin, 1, 0);
+    this.layoutCameraHudText(this.levelText, width / 2, stackedHud ? margin + 32 : margin + 2, 0.5, 0);
+    this.layoutCameraHudText(this.realityText, width / 2, stackedHud ? margin + 58 : margin + 30, 0.5, 0);
+  }
 
-    const badgeWidth = Math.min(360, width - margin * 2);
-    this.badge.clear();
-    if (this.badge.visible) {
-      this.badge
-        .roundRect(width / 2 - badgeWidth / 2, this.phaseText.y - 45, badgeWidth, 92, 8)
-        .fill({ color: 0x07080b, alpha: 0.68 })
-        .stroke({ color: 0xf0c95d, width: 1, alpha: 0.85 });
-    }
+  private layoutCameraHudText(text: HudTextPlane, x: number, y: number, anchorX: number, anchorY: number): void {
+    const width = Math.max(1, this.shell.clientWidth);
+    const height = Math.max(1, this.shell.clientHeight);
+    const viewHeight = 2 * Math.tan(THREE.MathUtils.degToRad(CAMERA_FOV) / 2) * HUD_CAMERA_DEPTH;
+    const viewWidth = viewHeight * this.camera.aspect;
+    const centerX = x + (0.5 - anchorX) * text.cssWidth;
+    const centerY = y + (0.5 - anchorY) * text.cssHeight;
+
+    text.mesh.position.set(
+      (centerX / width - 0.5) * viewWidth,
+      (0.5 - centerY / height) * viewHeight,
+      0
+    );
+    text.mesh.scale.set(
+      (text.cssWidth / width) * viewWidth,
+      (text.cssHeight / height) * viewHeight,
+      1
+    );
+  }
+
+  private hudMargin(): number {
+    const width = Math.max(1, this.shell.clientWidth);
+    const height = Math.max(1, this.shell.clientHeight);
+    return Math.max(32, Math.min(width, height) * 0.045);
   }
 
   private get currentInput(): BreakoutInput {
@@ -1100,6 +1050,191 @@ export class BreakoutGame {
 //   return texture;
 // }
 
+type HudTextPlaneOptions = {
+  fontSize: number;
+  fill: string;
+  weight?: 'normal' | 'bold';
+  paddingX?: number;
+  paddingY?: number;
+  minWidth?: number;
+  minHeight?: number;
+  background?: string;
+  border?: string;
+  borderWidth?: number;
+  radius?: number;
+  renderOrder: number;
+  opacity?: number;
+};
+
+class HudTextPlane {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private readonly options: HudTextPlaneOptions;
+  private texture: THREE.CanvasTexture;
+  private lastText = '';
+  private lastMaxCssWidth = -1;
+
+  cssWidth = 1;
+  cssHeight = 1;
+
+  constructor(options: HudTextPlaneOptions) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create HUD text canvas.');
+    }
+
+    this.context = context;
+    this.options = options;
+    this.texture = createHudCanvasTexture(this.canvas);
+
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      opacity: options.opacity ?? 1,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.material.userData.forceTransparent = true;
+
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = options.renderOrder;
+    this.mesh.visible = false;
+  }
+
+  setText(text: string, maxCssWidth = Number.POSITIVE_INFINITY): void {
+    const nextMaxCssWidth = Number.isFinite(maxCssWidth) ? Math.max(1, Math.floor(maxCssWidth)) : -1;
+    if (text === this.lastText && nextMaxCssWidth === this.lastMaxCssWidth) {
+      return;
+    }
+
+    this.lastText = text;
+    this.lastMaxCssWidth = nextMaxCssWidth;
+
+    const paddingX = this.options.paddingX ?? 0;
+    const paddingY = this.options.paddingY ?? 0;
+    const minWidth = this.options.minWidth ?? 1;
+    const minHeight = this.options.minHeight ?? 1;
+    const maxWidth = nextMaxCssWidth > 0 ? nextMaxCssWidth : Number.POSITIVE_INFINITY;
+    const visibleText = text.length > 0 ? text : ' ';
+    const fontSize = this.fittedFontSize(visibleText, maxWidth, paddingX);
+    const font = this.font(fontSize);
+
+    this.context.font = font;
+    const metrics = this.context.measureText(visibleText);
+    const width = Math.max(1, Math.ceil(Math.max(minWidth, metrics.width + paddingX * 2)));
+    const height = Math.max(1, Math.ceil(Math.max(minHeight, fontSize * 1.28 + paddingY * 2)));
+
+    this.cssWidth = Math.min(width, maxWidth);
+    this.cssHeight = height;
+    this.resizeCanvas(Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE), Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE));
+
+    this.context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    this.context.clearRect(0, 0, this.cssWidth, this.cssHeight);
+
+    if (this.options.background) {
+      roundedRectPath(this.context, 0, 0, this.cssWidth, this.cssHeight, this.options.radius ?? 0);
+      this.context.fillStyle = this.options.background;
+      this.context.fill();
+    }
+
+    if (this.options.border && (this.options.borderWidth ?? 0) > 0) {
+      const borderWidth = this.options.borderWidth ?? 1;
+      const inset = borderWidth / 2;
+      roundedRectPath(
+        this.context,
+        inset,
+        inset,
+        this.cssWidth - borderWidth,
+        this.cssHeight - borderWidth,
+        this.options.radius ?? 0
+      );
+      this.context.strokeStyle = this.options.border;
+      this.context.lineWidth = borderWidth;
+      this.context.stroke();
+    }
+
+    this.context.font = font;
+    this.context.fillStyle = this.options.fill;
+    this.context.textAlign = 'center';
+    this.context.textBaseline = 'middle';
+    this.context.fillText(visibleText, this.cssWidth / 2, this.cssHeight / 2, Math.max(1, this.cssWidth - paddingX * 2));
+
+    this.texture.needsUpdate = true;
+    this.mesh.visible = text.length > 0;
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+
+  private fittedFontSize(text: string, maxWidth: number, paddingX: number): number {
+    const baseFontSize = this.options.fontSize;
+    if (!Number.isFinite(maxWidth)) {
+      return baseFontSize;
+    }
+
+    this.context.font = this.font(baseFontSize);
+    const measuredWidth = Math.max(1, this.context.measureText(text).width);
+    const availableWidth = Math.max(1, maxWidth - paddingX * 2);
+    if (measuredWidth <= availableWidth) {
+      return baseFontSize;
+    }
+
+    return Math.max(10, Math.floor(baseFontSize * (availableWidth / measuredWidth)));
+  }
+
+  private font(fontSize: number): string {
+    return `${this.options.weight ?? 'bold'} ${fontSize}px ${HUD_FONT_FAMILY}`;
+  }
+}
+
+function createHudCanvasTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.generateMipmaps = false;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  return texture;
+}
+
+function roundedRectPath(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+): void {
+  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+}
+
 function setMaterialOpacity(material: THREE.Material | THREE.Material[], opacity: number): void {
   if (Array.isArray(material)) {
     for (const entry of material) {
@@ -1113,11 +1248,20 @@ function setMaterialOpacity(material: THREE.Material | THREE.Material[], opacity
 
 function setSingleMaterialOpacity(material: THREE.Material, opacity: number): void {
   const baseOpacity = typeof material.userData.baseOpacity === 'number' ? material.userData.baseOpacity : material.opacity;
+  const nextOpacity = baseOpacity * opacity;
+  const forceTransparent = material.userData.forceTransparent === true;
+  const nextTransparent = forceTransparent || nextOpacity < 0.999;
+  const nextDepthWrite = !forceTransparent && nextOpacity >= 0.999;
+  const renderStateChanged = material.transparent !== nextTransparent || material.depthWrite !== nextDepthWrite;
+
   material.userData.baseOpacity = baseOpacity;
-  material.opacity = baseOpacity * opacity;
-  material.transparent = material.opacity < 0.999;
-  material.depthWrite = material.opacity >= 0.999;
-  material.needsUpdate = true;
+  material.opacity = nextOpacity;
+  material.transparent = nextTransparent;
+  material.depthWrite = nextDepthWrite;
+
+  if (renderStateChanged) {
+    material.needsUpdate = true;
+  }
 }
 
 function disposeObject(object: THREE.Object3D): void {

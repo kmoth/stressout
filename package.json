@@ -12,8 +12,7 @@
     "@babel/runtime": "^7.29.2",
     "@dimforge/rapier3d-compat": "^0.19.3",
     "howler": "^2.2.4",
-    "pixi.js": "^8.18.1",
-    "three": "^0.122.0",
+    "three": "^0.184.0",
     "three-nebula": "^10.0.3"
   },
   "devDependencies": {
