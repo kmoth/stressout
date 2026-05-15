@@ -61,15 +61,6 @@ const CAMERA_DISTANCE_PADDING = 1.24;
 const CAMERA_ELEVATION = 0;
 const CAMERA_PARALLAX_X = 1.64;
 const CAMERA_PARALLAX_Y = 1.12;
-const RETRO_PIXEL_SIZE = 3;
-const RETRO_COLOR_LEVELS = 7;
-const RETRO_SCANLINE_STRENGTH = 0.16;
-const RETRO_SCANLINE_DENSITY = 1;
-const RETRO_SCANLINE_SPEED = 0;
-const RETRO_VIGNETTE_STRENGTH = 0.36;
-const RETRO_COLOR_BLEEDING = 0.00115;
-const RETRO_BARREL_CURVATURE = 0.02;
-const RETRO_AFFINE_DISTORTION = 0;
 const TOUCH_SWIPE_MIN_DISTANCE = 44;
 const TOUCH_SWIPE_AXIS_RATIO = 1.15;
 const SELECTED_OPACITY = 1;
@@ -95,12 +86,72 @@ const PLANE_SCORE_MAX_WIDTH = 4.8;
 const PLANE_HEART_WORLD_HEIGHT = 0.34;
 const PLANE_HEART_MAX_WIDTH = 3.8;
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
+const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
+  pixelSize: 3,
+  colorLevels: 7,
+  scanlineStrength: 0.16,
+  scanlineDensity: 1,
+  scanlineSpeed: 0,
+  vignetteStrength: 0.36,
+  vignetteSmoothness: 0.48,
+  colorBleeding: 0.00115,
+  barrelCurvature: 0.02,
+  affineDistortion: 0
+};
+const POST_PROCESSING_CONTROLS: readonly PostProcessingControlDefinition[] = [
+  { key: 'pixelSize', label: 'Pixel size', min: 1, max: 8, step: 1, decimals: 0 },
+  { key: 'colorLevels', label: 'Color levels', min: 2, max: 32, step: 1, decimals: 0 },
+  { key: 'scanlineStrength', label: 'Scanline strength', min: 0, max: 0.6, step: 0.01, decimals: 2 },
+  { key: 'scanlineDensity', label: 'Scanline density', min: 0, max: 3, step: 0.05, decimals: 2 },
+  { key: 'scanlineSpeed', label: 'Scanline speed', min: -3, max: 3, step: 0.05, decimals: 2 },
+  { key: 'vignetteStrength', label: 'Vignette strength', min: 0, max: 0.9, step: 0.01, decimals: 2 },
+  { key: 'vignetteSmoothness', label: 'Vignette smoothness', min: 0.1, max: 1.2, step: 0.01, decimals: 2 },
+  { key: 'colorBleeding', label: 'Color bleeding', min: 0, max: 0.008, step: 0.00005, decimals: 5 },
+  { key: 'barrelCurvature', label: 'Barrel curvature', min: 0, max: 0.18, step: 0.002, decimals: 3 },
+  { key: 'affineDistortion', label: 'Affine distortion', min: 0, max: 1, step: 0.01, decimals: 2 }
+];
 const PHASE_STATUS_LABEL = {
   ready: 'READY',
   playing: '',
   cleared: 'CLEARED',
   'game-over': 'GAME OVER'
 } satisfies Record<BreakoutoutoutRenderState['phase'], string>;
+
+type PostProcessingSettings = {
+  pixelSize: number;
+  colorLevels: number;
+  scanlineStrength: number;
+  scanlineDensity: number;
+  scanlineSpeed: number;
+  vignetteStrength: number;
+  vignetteSmoothness: number;
+  colorBleeding: number;
+  barrelCurvature: number;
+  affineDistortion: number;
+};
+
+type PostProcessingSettingKey = keyof PostProcessingSettings;
+
+type PostProcessingControlDefinition = {
+  key: PostProcessingSettingKey;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  decimals: number;
+};
+
+type PostProcessingUniforms = {
+  colorLevels: THREE.UniformNode<'float', number>;
+  scanlineStrength: THREE.UniformNode<'float', number>;
+  scanlineDensity: THREE.UniformNode<'float', number>;
+  scanlineSpeed: THREE.UniformNode<'float', number>;
+  vignetteStrength: THREE.UniformNode<'float', number>;
+  vignetteSmoothness: THREE.UniformNode<'float', number>;
+  colorBleeding: THREE.UniformNode<'float', number>;
+  barrelCurvature: THREE.UniformNode<'float', number>;
+  affineDistortion: THREE.UniformNode<'float', number>;
+};
 
 type NebulaRuntime = {
   system: any;
@@ -182,6 +233,8 @@ export class BreakoutGame {
   private readonly renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
   private readonly renderPipeline: THREE.RenderPipeline;
   private readonly retroScenePass: ReturnType<typeof retroPass>;
+  private readonly postProcessingUniforms: PostProcessingUniforms;
+  private readonly postProcessingPanel: PostProcessingPanel;
   private readonly stats = new Stats();
   private readonly sound = new SoundBank();
   private readonly keys = new Set<string>();
@@ -203,6 +256,7 @@ export class BreakoutGame {
   private readonly pendingSplits: PendingSplit[] = [];
   private readonly splitBloomPulses: SplitBloomPulse[] = [];
   private readonly splitGlowActiveInstances = new Set<BreakoutoutoutInstance>();
+  private readonly postProcessingSettings: PostProcessingSettings = { ...POST_PROCESSING_DEFAULTS };
 
   private nebula: NebulaRuntime | null = null;
   private accumulator = 0;
@@ -226,7 +280,6 @@ export class BreakoutGame {
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
     this.autopilot = options.autopilot ?? false;
     this.shell = document.createElement('div');
-    this.shell.className = 'game-shell';
     root.replaceChildren(this.shell);
 
     this.renderer.domElement.className = 'three-layer';
@@ -237,11 +290,18 @@ export class BreakoutGame {
     this.shell.appendChild(this.stats.dom);
     this.scene.add(this.camera);
 
+    this.postProcessingUniforms = createPostProcessingUniforms(this.postProcessingSettings);
     this.retroScenePass = retroPass(this.scene, this.camera, {
-      affineDistortion: uniform(RETRO_AFFINE_DISTORTION)
+      affineDistortion: this.postProcessingUniforms.affineDistortion
     });
-    this.retroScenePass.setResolutionScale(1 / RETRO_PIXEL_SIZE);
+    this.applyPostProcessingSettings();
     this.renderPipeline = new THREE.RenderPipeline(this.renderer, this.createRetroPipeline(this.retroScenePass));
+    this.postProcessingPanel = new PostProcessingPanel(this.shell, {
+      settings: this.postProcessingSettings,
+      onChange: (key, value) => this.setPostProcessingSetting(key, value),
+      onReset: () => this.resetPostProcessingSettings(),
+      onExport: () => this.exportPostProcessingSettings()
+    });
 
     // this.particleTexture = createParticleTexture();
     this.createLighting();
@@ -250,26 +310,71 @@ export class BreakoutGame {
   }
 
   private createRetroPipeline(scenePass: ReturnType<typeof retroPass>): THREE.Node {
-    const colorLevels = uniform(RETRO_COLOR_LEVELS);
-    const scanlineStrength = uniform(RETRO_SCANLINE_STRENGTH);
-    const vignetteStrength = uniform(RETRO_VIGNETTE_STRENGTH);
-    const colorBleed = uniform(RETRO_COLOR_BLEEDING);
-    const curvature = uniform(RETRO_BARREL_CURVATURE);
+    const colorLevels = this.postProcessingUniforms.colorLevels;
+    const scanlineStrength = this.postProcessingUniforms.scanlineStrength;
+    const scanlineDensity = this.postProcessingUniforms.scanlineDensity;
+    const scanlineSpeed = this.postProcessingUniforms.scanlineSpeed;
+    const vignetteStrength = this.postProcessingUniforms.vignetteStrength;
+    const vignetteSmoothness = this.postProcessingUniforms.vignetteSmoothness;
+    const colorBleedingAmount = this.postProcessingUniforms.colorBleeding;
+    const curvature = this.postProcessingUniforms.barrelCurvature;
     const distortedUv = barrelUV(curvature);
     const distortedDelta = circle(curvature.add(0.1).mul(10), 1).mul(curvature).mul(0.05);
     const warpedPass = replaceDefaultUV(distortedUv, scenePass);
-    const bled = colorBleeding(warpedPass, colorBleed.add(distortedDelta));
+    const bled = colorBleeding(warpedPass, colorBleedingAmount.add(distortedDelta));
     const dithered = bayerDither(bled, colorLevels);
     const quantized = posterize(dithered, colorLevels);
-    const vignetted = vignette(quantized, vignetteStrength, 0.48, distortedUv);
+    const vignetted = vignette(quantized, vignetteStrength, vignetteSmoothness, distortedUv);
 
     return scanlines(
       vignetted,
       scanlineStrength,
-      screenSize.y.mul(RETRO_SCANLINE_DENSITY),
-      uniform(RETRO_SCANLINE_SPEED),
+      screenSize.y.mul(scanlineDensity),
+      scanlineSpeed,
       distortedUv
     );
+  }
+
+  private setPostProcessingSetting(key: PostProcessingSettingKey, value: number): void {
+    const nextValue = normalizePostProcessingValue(key, value);
+    if (this.postProcessingSettings[key] === nextValue) {
+      this.postProcessingPanel.setValue(key, nextValue);
+      return;
+    }
+
+    this.postProcessingSettings[key] = nextValue;
+    this.applyPostProcessingSettings();
+    this.postProcessingPanel.setValue(key, nextValue);
+  }
+
+  private resetPostProcessingSettings(): void {
+    for (const control of POST_PROCESSING_CONTROLS) {
+      this.postProcessingSettings[control.key] = POST_PROCESSING_DEFAULTS[control.key];
+    }
+
+    this.applyPostProcessingSettings();
+    this.postProcessingPanel.setSettings(this.postProcessingSettings);
+  }
+
+  private applyPostProcessingSettings(): void {
+    const settings = this.postProcessingSettings;
+
+    this.retroScenePass.setResolutionScale(1 / Math.max(1, settings.pixelSize));
+    this.postProcessingUniforms.colorLevels.value = settings.colorLevels;
+    this.postProcessingUniforms.scanlineStrength.value = settings.scanlineStrength;
+    this.postProcessingUniforms.scanlineDensity.value = settings.scanlineDensity;
+    this.postProcessingUniforms.scanlineSpeed.value = settings.scanlineSpeed;
+    this.postProcessingUniforms.vignetteStrength.value = settings.vignetteStrength;
+    this.postProcessingUniforms.vignetteSmoothness.value = settings.vignetteSmoothness;
+    this.postProcessingUniforms.colorBleeding.value = settings.colorBleeding;
+    this.postProcessingUniforms.barrelCurvature.value = settings.barrelCurvature;
+    this.postProcessingUniforms.affineDistortion.value = settings.affineDistortion;
+  }
+
+  private exportPostProcessingSettings(): string {
+    return `const POST_PROCESSING_DEFAULTS: PostProcessingSettings = ${formatPostProcessingSettings(
+      this.postProcessingSettings
+    )};`;
   }
 
   static async create(root: HTMLElement, options: BreakoutGameOptions = {}): Promise<BreakoutGame> {
@@ -1371,6 +1476,224 @@ export class BreakoutGame {
 //   return texture;
 // }
 
+type PostProcessingPanelOptions = {
+  settings: PostProcessingSettings;
+  onChange: (key: PostProcessingSettingKey, value: number) => void;
+  onReset: () => void;
+  onExport: () => string;
+};
+
+type PostProcessingControlElements = {
+  range: HTMLInputElement;
+  numeric: HTMLInputElement;
+  value: HTMLSpanElement;
+};
+
+class PostProcessingPanel {
+  readonly element: HTMLDivElement;
+
+  private readonly body: HTMLDivElement;
+  private readonly toggleButton: HTMLButtonElement;
+  private readonly outputWrap: HTMLDivElement;
+  private readonly output: HTMLTextAreaElement;
+  private readonly status: HTMLSpanElement;
+  private readonly controls = new Map<PostProcessingSettingKey, PostProcessingControlElements>();
+  private readonly options: PostProcessingPanelOptions;
+  private expanded = true;
+
+  constructor(root: HTMLElement, options: PostProcessingPanelOptions) {
+    this.options = options;
+    this.element = document.createElement('div');
+    this.element.className = 'post-processing-panel';
+    this.element.addEventListener('keydown', stopEventPropagation);
+    this.element.addEventListener('keyup', stopEventPropagation);
+    this.element.addEventListener('pointerdown', stopEventPropagation);
+    this.element.addEventListener('pointermove', stopEventPropagation);
+    this.element.addEventListener('pointerup', stopEventPropagation);
+    this.element.addEventListener('pointercancel', stopEventPropagation);
+
+    this.toggleButton = document.createElement('button');
+    this.toggleButton.type = 'button';
+    this.toggleButton.className = 'post-processing-panel__toggle';
+    this.toggleButton.textContent = 'Hide FX';
+    this.toggleButton.setAttribute('aria-expanded', 'true');
+    this.toggleButton.addEventListener('click', () => this.setExpanded(!this.expanded));
+
+    this.body = document.createElement('div');
+    this.body.className = 'post-processing-panel__body';
+
+    const header = document.createElement('div');
+    header.className = 'post-processing-panel__header';
+    const title = document.createElement('h2');
+    title.textContent = 'Post FX';
+
+    const actions = document.createElement('div');
+    actions.className = 'post-processing-panel__actions';
+    const resetButton = this.createActionButton('Reset');
+    resetButton.addEventListener('click', () => {
+      this.options.onReset();
+      this.status.textContent = 'Reset';
+    });
+    const exportButton = this.createActionButton('Export');
+    exportButton.addEventListener('click', () => this.exportSettings());
+    const copyButton = this.createActionButton('Copy');
+    copyButton.addEventListener('click', () => this.copyExport());
+    actions.append(resetButton, exportButton, copyButton);
+
+    header.append(title, actions);
+    this.body.append(header);
+
+    const form = document.createElement('div');
+    form.className = 'post-processing-panel__controls';
+    for (const control of POST_PROCESSING_CONTROLS) {
+      form.append(this.createControl(control, options.settings[control.key]));
+    }
+    this.body.append(form);
+
+    this.outputWrap = document.createElement('div');
+    this.outputWrap.className = 'post-processing-panel__output';
+    this.outputWrap.hidden = true;
+    this.output = document.createElement('textarea');
+    this.output.readOnly = true;
+    this.output.spellcheck = false;
+    this.output.rows = 8;
+    this.output.setAttribute('aria-label', 'Exported post processing settings');
+    this.status = document.createElement('span');
+    this.status.className = 'post-processing-panel__status';
+    this.outputWrap.append(this.output, this.status);
+    this.body.append(this.outputWrap);
+
+    this.element.append(this.toggleButton, this.body);
+    root.appendChild(this.element);
+  }
+
+  setSettings(settings: PostProcessingSettings): void {
+    for (const control of POST_PROCESSING_CONTROLS) {
+      this.setValue(control.key, settings[control.key]);
+    }
+  }
+
+  setValue(key: PostProcessingSettingKey, value: number): void {
+    const elements = this.controls.get(key);
+    const control = controlDefinitionForKey(key);
+    if (!elements || !control) {
+      return;
+    }
+
+    const formattedValue = formatControlValue(value, control.decimals);
+    elements.range.value = String(value);
+    elements.numeric.value = formattedValue;
+    elements.value.textContent = formattedValue;
+    this.refreshExportIfVisible();
+  }
+
+  private createControl(control: PostProcessingControlDefinition, value: number): HTMLLabelElement {
+    const field = document.createElement('label');
+    field.className = 'post-processing-panel__control';
+
+    const labelRow = document.createElement('span');
+    labelRow.className = 'post-processing-panel__label-row';
+    const label = document.createElement('span');
+    label.textContent = control.label;
+    const valueDisplay = document.createElement('span');
+    valueDisplay.className = 'post-processing-panel__value';
+    valueDisplay.textContent = formatControlValue(value, control.decimals);
+    labelRow.append(label, valueDisplay);
+
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = String(control.min);
+    range.max = String(control.max);
+    range.step = String(control.step);
+    range.value = String(value);
+    range.setAttribute('aria-label', `${control.label} slider`);
+    range.addEventListener('input', () => this.changeValue(control, range.valueAsNumber));
+
+    const numeric = document.createElement('input');
+    numeric.type = 'number';
+    numeric.min = String(control.min);
+    numeric.max = String(control.max);
+    numeric.step = String(control.step);
+    numeric.value = formatControlValue(value, control.decimals);
+    numeric.setAttribute('aria-label', `${control.label} value`);
+    numeric.addEventListener('input', () => this.changeValue(control, numeric.valueAsNumber));
+    numeric.addEventListener('blur', () => {
+      const current = normalizePostProcessingValue(control.key, this.options.settings[control.key]);
+      this.setValue(control.key, current);
+    });
+
+    this.controls.set(control.key, {
+      range,
+      numeric,
+      value: valueDisplay
+    });
+
+    field.append(labelRow, range, numeric);
+    return field;
+  }
+
+  private changeValue(control: PostProcessingControlDefinition, value: number): void {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    this.options.onChange(control.key, value);
+    this.status.textContent = '';
+  }
+
+  private createActionButton(label: string): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    return button;
+  }
+
+  private setExpanded(expanded: boolean): void {
+    this.expanded = expanded;
+    this.body.hidden = !expanded;
+    this.element.classList.toggle('is-collapsed', !expanded);
+    this.toggleButton.textContent = expanded ? 'Hide FX' : 'Post FX';
+    this.toggleButton.setAttribute('aria-expanded', String(expanded));
+  }
+
+  private exportSettings(): void {
+    this.output.value = this.options.onExport();
+    this.outputWrap.hidden = false;
+    this.output.focus();
+    this.output.select();
+    this.status.textContent = 'Exported';
+  }
+
+  private copyExport(): void {
+    if (this.output.value.length === 0) {
+      this.exportSettings();
+    }
+
+    if (navigator.clipboard) {
+      void navigator.clipboard.writeText(this.output.value)
+        .then(() => {
+          this.status.textContent = 'Copied';
+        })
+        .catch(() => {
+          this.output.focus();
+          this.output.select();
+          this.status.textContent = 'Select text';
+        });
+      return;
+    }
+
+    this.output.focus();
+    this.output.select();
+    this.status.textContent = 'Select text';
+  }
+
+  private refreshExportIfVisible(): void {
+    if (!this.outputWrap.hidden) {
+      this.output.value = this.options.onExport();
+    }
+  }
+}
+
 type HudTextPlaneOptions = {
   fontSize: number;
   fill: string;
@@ -1665,6 +1988,66 @@ function roundedRectPath(
   context.lineTo(x, y + safeRadius);
   context.quadraticCurveTo(x, y, x + safeRadius, y);
   context.closePath();
+}
+
+function createPostProcessingUniforms(settings: PostProcessingSettings): PostProcessingUniforms {
+  return {
+    colorLevels: uniform(settings.colorLevels),
+    scanlineStrength: uniform(settings.scanlineStrength),
+    scanlineDensity: uniform(settings.scanlineDensity),
+    scanlineSpeed: uniform(settings.scanlineSpeed),
+    vignetteStrength: uniform(settings.vignetteStrength),
+    vignetteSmoothness: uniform(settings.vignetteSmoothness),
+    colorBleeding: uniform(settings.colorBleeding),
+    barrelCurvature: uniform(settings.barrelCurvature),
+    affineDistortion: uniform(settings.affineDistortion)
+  };
+}
+
+function stopEventPropagation(event: Event): void {
+  event.stopPropagation();
+}
+
+function controlDefinitionForKey(key: PostProcessingSettingKey): PostProcessingControlDefinition | undefined {
+  return POST_PROCESSING_CONTROLS.find((control) => control.key === key);
+}
+
+function normalizePostProcessingValue(key: PostProcessingSettingKey, value: number): number {
+  const control = controlDefinitionForKey(key);
+  const min = control?.min ?? Number.NEGATIVE_INFINITY;
+  const max = control?.max ?? Number.POSITIVE_INFINITY;
+  const decimals = control?.decimals ?? 6;
+  const clamped = clamp(Number.isFinite(value) ? value : POST_PROCESSING_DEFAULTS[key], min, max);
+
+  if (decimals === 0) {
+    return Math.round(clamped);
+  }
+
+  return Number(clamped.toFixed(Math.min(decimals + 2, 8)));
+}
+
+function formatPostProcessingSettings(settings: PostProcessingSettings): string {
+  const lines = POST_PROCESSING_CONTROLS.map((control) => {
+    return `  ${control.key}: ${formatExportNumber(settings[control.key])}`;
+  });
+
+  return `{\n${lines.join(',\n')}\n}`;
+}
+
+function formatExportNumber(value: number): string {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+
+  return Number(value.toFixed(6)).toString();
+}
+
+function formatControlValue(value: number, decimals: number): string {
+  if (decimals === 0) {
+    return String(Math.round(value));
+  }
+
+  return value.toFixed(decimals);
 }
 
 function setMaterialOpacity(material: THREE.Material | THREE.Material[], opacity: number): void {
