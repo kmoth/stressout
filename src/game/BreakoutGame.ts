@@ -86,17 +86,29 @@ const PLANE_SCORE_MAX_WIDTH = 4.8;
 const PLANE_HEART_WORLD_HEIGHT = 0.34;
 const PLANE_HEART_MAX_WIDTH = 3.8;
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
+// const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
+//   pixelSize: 3,
+//   colorLevels: 7,
+//   scanlineStrength: 0.16,
+//   scanlineDensity: 1,
+//   scanlineSpeed: 0,
+//   vignetteStrength: 0.36,
+//   vignetteSmoothness: 0.48,
+//   colorBleeding: 0.00115,
+//   barrelCurvature: 0.02,
+//   affineDistortion: 0
+// };
 const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
-  pixelSize: 3,
-  colorLevels: 7,
-  scanlineStrength: 0.16,
-  scanlineDensity: 1,
-  scanlineSpeed: 0,
-  vignetteStrength: 0.36,
-  vignetteSmoothness: 0.48,
-  colorBleeding: 0.00115,
-  barrelCurvature: 0.02,
-  affineDistortion: 0
+  pixelSize: 5,
+  colorLevels: 26,
+  scanlineStrength: 0.23,
+  scanlineDensity: 0.45,
+  scanlineSpeed: 1.75,
+  vignetteStrength: 0.83,
+  vignetteSmoothness: 0.52,
+  colorBleeding: 0.00685,
+  barrelCurvature: 0.024,
+  affineDistortion: 0.2
 };
 const POST_PROCESSING_CONTROLS: readonly PostProcessingControlDefinition[] = [
   { key: 'pixelSize', label: 'Pixel size', min: 1, max: 8, step: 1, decimals: 0 },
