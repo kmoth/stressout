@@ -280,6 +280,7 @@ export class BreakoutGame {
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
     this.autopilot = options.autopilot ?? false;
     this.shell = document.createElement('div');
+    this.shell.className = 'game-shell';
     root.replaceChildren(this.shell);
 
     this.renderer.domElement.className = 'three-layer';
@@ -1499,12 +1500,12 @@ class PostProcessingPanel {
   private readonly status: HTMLSpanElement;
   private readonly controls = new Map<PostProcessingSettingKey, PostProcessingControlElements>();
   private readonly options: PostProcessingPanelOptions;
-  private expanded = true;
+  private expanded = false;
 
   constructor(root: HTMLElement, options: PostProcessingPanelOptions) {
     this.options = options;
     this.element = document.createElement('div');
-    this.element.className = 'post-processing-panel';
+    this.element.className = 'post-processing-panel is-collapsed';
     this.element.addEventListener('keydown', stopEventPropagation);
     this.element.addEventListener('keyup', stopEventPropagation);
     this.element.addEventListener('pointerdown', stopEventPropagation);
@@ -1515,12 +1516,13 @@ class PostProcessingPanel {
     this.toggleButton = document.createElement('button');
     this.toggleButton.type = 'button';
     this.toggleButton.className = 'post-processing-panel__toggle';
-    this.toggleButton.textContent = 'Hide FX';
-    this.toggleButton.setAttribute('aria-expanded', 'true');
+    this.toggleButton.textContent = 'Post FX';
+    this.toggleButton.setAttribute('aria-expanded', 'false');
     this.toggleButton.addEventListener('click', () => this.setExpanded(!this.expanded));
 
     this.body = document.createElement('div');
     this.body.className = 'post-processing-panel__body';
+    this.body.hidden = true;
 
     const header = document.createElement('div');
     header.className = 'post-processing-panel__header';
