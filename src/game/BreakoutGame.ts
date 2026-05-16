@@ -92,6 +92,10 @@ const PLANE_STATUS_WORLD_HEIGHT = 1.35;
 const PLANE_STATUS_MAX_WIDTH = BOARD_WIDTH - 1.2;
 const PLANE_STATUS_Y = -1.05;
 const PLANE_STATUS_Z = 0.88;
+const PLANE_RESTART_WORLD_HEIGHT = 0.9;
+const PLANE_RESTART_MAX_WIDTH = 6.4;
+const PLANE_RESTART_Y = -2.95;
+const PLANE_RESTART_Z = 0.9;
 const PLANE_CORNER_HUD_Z = 0.92;
 const PLANE_CORNER_HUD_GAP = 0.28;
 const PLANE_SCORE_WORLD_HEIGHT = 0.84;
@@ -286,6 +290,7 @@ type InstanceView = {
   scoreText: HudTextPlane;
   hearts: HudHeartsPlane;
   statusText: HudTextPlane;
+  restartButtonText: HudTextPlane;
   renderState: BreakoutoutoutRenderState;
   appliedOpacity: number;
   targetOpacity: number;
@@ -324,6 +329,7 @@ export class BreakoutGame {
   private readonly planeHudParentQuaternion = new THREE.Quaternion();
   private readonly planeHudCameraQuaternion = new THREE.Quaternion();
   // private readonly particleTexture: THREE.CanvasTexture;
+  private readonly initialInstanceCount: number;
   private readonly autopilot: boolean;
   private readonly ballSpeedMultiplierActiveGameCap: number;
   private readonly instanceOptions: BreakoutoutoutOptions;
@@ -363,6 +369,7 @@ export class BreakoutGame {
   private touchPaddleX: number | null = null;
 
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
+    this.initialInstanceCount = normalizeInitialInstanceCount(options.initialInstanceCount);
     this.autopilot = options.autopilot ?? false;
     this.ballSpeedMultiplierActiveGameCap = normalizeBallSpeedMultiplierActiveGameCap(
       options.ballSpeedMultiplierActiveGameCap
@@ -476,8 +483,7 @@ export class BreakoutGame {
     const game = new BreakoutGame(root, options);
     await game.renderer.init();
     game.createNebulaSystem();
-    const initialInstanceCount = normalizeInitialInstanceCount(options.initialInstanceCount);
-    for (let index = 0; index < initialInstanceCount; index += 1) {
+    for (let index = 0; index < game.initialInstanceCount; index += 1) {
       game.addInstance(new BreakoutoutoutInstance(game.nextInstanceId, undefined, game.instanceOptions));
       game.nextInstanceId += 1;
     }
@@ -548,6 +554,7 @@ export class BreakoutGame {
     const scoreText = this.createPlaneScoreText();
     const hearts = new HudHeartsPlane({ renderOrder: PLANE_HUD_RENDER_ORDER });
     const statusText = this.createPlaneStatusText();
+    const restartButtonText = this.createPlaneRestartButtonText();
     const bricks = new Map<string, THREE.Mesh>();
     const activeBrickIds = new Set<string>();
     const splitGlowMeshes: SplitGlowMesh[] = [];
@@ -555,7 +562,7 @@ export class BreakoutGame {
     const wallMeshes = this.createWalls(group, splitGlowMeshes);
     splitGlowMeshes.push(this.attachSplitGlow(paddleMesh, PADDLE_EMISSIVE, { baseScale: 1.18, pulseScale: 0.42 }));
     splitGlowMeshes.push(this.attachSplitGlow(ballMesh, 0xffe5a8, { baseScale: 1.75, pulseScale: 0.86 }));
-    group.add(paddleMesh, ballMesh, scoreText.mesh, hearts.mesh, statusText.mesh);
+    group.add(paddleMesh, ballMesh, scoreText.mesh, hearts.mesh, statusText.mesh, restartButtonText.mesh);
 
     const view: InstanceView = {
       instance,
@@ -570,6 +577,7 @@ export class BreakoutGame {
       scoreText,
       hearts,
       statusText,
+      restartButtonText,
       renderState: state,
       appliedOpacity: Number.NaN,
       targetOpacity: Number.NaN,
@@ -606,6 +614,23 @@ export class BreakoutGame {
       borderWidth: 1,
       radius: 8,
       renderOrder: PLANE_HUD_RENDER_ORDER
+    });
+  }
+
+  private createPlaneRestartButtonText(): HudTextPlane {
+    return new HudTextPlane({
+      fontSize: 36,
+      fill: '#08090d',
+      weight: 'bold',
+      paddingX: 42,
+      paddingY: 18,
+      minWidth: 240,
+      minHeight: 84,
+      background: 'rgba(240, 201, 93, 0.92)',
+      border: 'rgba(255, 243, 190, 0.96)',
+      borderWidth: 2,
+      radius: 6,
+      renderOrder: PLANE_HUD_RENDER_ORDER + 1
     });
   }
 
@@ -783,7 +808,11 @@ export class BreakoutGame {
 
     if (event.code === 'KeyR') {
       event.preventDefault();
-      this.restartSelected();
+      if (this.totalGameOver) {
+        this.restartGame();
+      } else {
+        this.restartSelected();
+      }
     }
   };
 
@@ -792,6 +821,13 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (this.totalGameOver) {
+      if (this.isRestartButtonHit(event.clientX, event.clientY)) {
+        event.preventDefault();
+      }
+      return;
+    }
+
     if (!this.isTouchPointer(event) || this.activeTouchPointerId !== null) {
       return;
     }
@@ -807,6 +843,11 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (this.totalGameOver) {
+      this.updateRestartButtonCursor(event.clientX, event.clientY);
+      return;
+    }
+
     if (event.pointerId !== this.activeTouchPointerId) {
       return;
     }
@@ -818,6 +859,14 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
+    if (this.totalGameOver) {
+      if (this.isRestartButtonHit(event.clientX, event.clientY)) {
+        event.preventDefault();
+        this.restartGame();
+      }
+      return;
+    }
+
     if (event.pointerId !== this.activeTouchPointerId) {
       return;
     }
@@ -865,16 +914,9 @@ export class BreakoutGame {
       return null;
     }
 
-    const bounds = this.renderer.domElement.getBoundingClientRect();
-    if (bounds.width <= 0 || bounds.height <= 0) {
+    if (!this.updatePointerRay(clientX, clientY)) {
       return null;
     }
-
-    this.pointerNdc.set(
-      ((clientX - bounds.left) / bounds.width) * 2 - 1,
-      -(((clientY - bounds.top) / bounds.height) * 2 - 1)
-    );
-    this.pointerRaycaster.setFromCamera(this.pointerNdc, this.camera);
 
     view.group.getWorldPosition(this.pointerBoardPoint);
     view.group.getWorldQuaternion(this.pointerBoardQuaternion);
@@ -889,6 +931,33 @@ export class BreakoutGame {
     this.pointerLocalHit.copy(hit);
     view.group.worldToLocal(this.pointerLocalHit);
     return this.pointerLocalHit.x;
+  }
+
+  private updatePointerRay(clientX: number, clientY: number): boolean {
+    const bounds = this.renderer.domElement.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) {
+      return false;
+    }
+
+    this.pointerNdc.set(
+      ((clientX - bounds.left) / bounds.width) * 2 - 1,
+      -(((clientY - bounds.top) / bounds.height) * 2 - 1)
+    );
+    this.pointerRaycaster.setFromCamera(this.pointerNdc, this.camera);
+    return true;
+  }
+
+  private isRestartButtonHit(clientX: number, clientY: number): boolean {
+    const view = this.selectedView;
+    if (!view || !view.restartButtonText.mesh.visible || !this.updatePointerRay(clientX, clientY)) {
+      return false;
+    }
+
+    return this.pointerRaycaster.intersectObject(view.restartButtonText.mesh, false).length > 0;
+  }
+
+  private updateRestartButtonCursor(clientX: number, clientY: number): void {
+    this.renderer.domElement.style.cursor = this.isRestartButtonHit(clientX, clientY) ? 'pointer' : '';
   }
 
   private handleTouchGestureEnd(): void {
@@ -1009,6 +1078,49 @@ export class BreakoutGame {
     }
   }
 
+  private restartGame(): void {
+    this.clearTouchInput();
+    this.keys.clear();
+    this.pendingSplits.length = 0;
+    this.splitBloomPulses.length = 0;
+    this.splitGlowActiveInstances.clear();
+    this.ballSpeedMultiplierTargets.clear();
+    this.ballSpeedMultiplierTweens.clear();
+
+    for (const view of this.views) {
+      this.disposePlaneView(view);
+    }
+    this.views.clear();
+
+    for (const instance of this.instances) {
+      instance.dispose();
+    }
+    this.instances.length = 0;
+
+    this.accumulator = 0;
+    this.lastTime = performance.now();
+    this.nextInstanceId = 1;
+    this.selectedIndex = 0;
+    this.selectedTrackIndex = 0;
+    this.hasNavigatedInstances = false;
+    this.globalScore = 0;
+    this.gameSpeed = 1;
+    this.gameSpeedTween = null;
+    this.splitSequenceActive = false;
+    this.fatalMissInstance = null;
+    this.totalGameOver = false;
+    this.renderer.domElement.style.cursor = '';
+    this.cameraFocusX = 0;
+    this.cameraFocusY = CAMERA_ELEVATION;
+    this.cameraFocusZ = 0;
+    this.cameraPlaneTransition = null;
+
+    for (let index = 0; index < this.initialInstanceCount; index += 1) {
+      this.addInstance(new BreakoutoutoutInstance(this.nextInstanceId, undefined, this.instanceOptions));
+      this.nextInstanceId += 1;
+    }
+  }
+
   private handleInstanceEvents(instance: BreakoutoutoutInstance, events: BreakoutoutoutEvent[]): void {
     if (events.length === 0) {
       return;
@@ -1107,6 +1219,7 @@ export class BreakoutGame {
     }
 
     this.splitSequenceActive = true;
+    this.setGameSpeed(0);
     this.tweenGameSpeed(0, SPLIT_GAME_SPEED_TWEEN_DURATION, () => {
       this.spawnSplitReality(pending);
     });
@@ -1474,12 +1587,24 @@ export class BreakoutGame {
     const statusLabel = selected ? this.planeStatusLabel(state) : '';
     view.statusText.setText(statusLabel, 360);
     view.statusText.mesh.position.set(0, PLANE_STATUS_Y, PLANE_STATUS_Z);
+    this.updatePlaneRestartButtonHud(view, selected && this.totalGameOver && state.phase === 'game-over');
 
     if (statusLabel.length === 0) {
       return;
     }
 
     this.scalePlaneHudText(view.statusText, PLANE_STATUS_WORLD_HEIGHT, PLANE_STATUS_MAX_WIDTH);
+  }
+
+  private updatePlaneRestartButtonHud(view: InstanceView, visible: boolean): void {
+    view.restartButtonText.setText(visible ? 'RESTART' : '', 220);
+    view.restartButtonText.mesh.position.set(0, PLANE_RESTART_Y, PLANE_RESTART_Z);
+
+    if (!visible) {
+      return;
+    }
+
+    this.scalePlaneHudText(view.restartButtonText, PLANE_RESTART_WORLD_HEIGHT, PLANE_RESTART_MAX_WIDTH);
   }
 
   private planeStatusLabel(state: BreakoutoutoutRenderState): string {
@@ -2007,6 +2132,9 @@ export class BreakoutGame {
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
       view.statusText.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
+      view.restartButtonText.mesh.quaternion
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
     }
