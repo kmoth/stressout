@@ -56,6 +56,8 @@ const SPLIT_PLANE_SPAWN_Z_OFFSET = 0.36;
 const SPLIT_BLOOM_DURATION = 1.2;
 const SPLIT_GLOW_BASE_OPACITY = 0.3;
 const BALL_SPEED_ACTIVE_GAME_SCALE = 0.5;
+const BALL_SPEED_MULTIPLIER_TWEEN_DURATION = 2;
+const BALL_SPEED_MULTIPLIER_EPSILON = 0.0001;
 const CAMERA_FOV = 59;
 const CAMERA_DISTANCE_PADDING = 1.24;
 const CAMERA_ELEVATION = 0;
@@ -201,6 +203,13 @@ type GameSpeedTween = {
   onComplete?: () => void;
 };
 
+type BallSpeedMultiplierTween = {
+  from: number;
+  to: number;
+  elapsed: number;
+  duration: number;
+};
+
 type PendingSplit = {
   source: BreakoutoutoutInstance;
   snapshot: BreakoutoutoutSnapshot;
@@ -236,7 +245,7 @@ type InstanceView = {
   zTransition?: PlaneZTransition;
 };
 
-export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot'>;
+export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot' | 'sandbox' | 'specialBrickKinds'>;
 
 export class BreakoutGame {
   private readonly shell: HTMLDivElement;
@@ -262,12 +271,15 @@ export class BreakoutGame {
   private readonly planeHudCameraQuaternion = new THREE.Quaternion();
   // private readonly particleTexture: THREE.CanvasTexture;
   private readonly autopilot: boolean;
+  private readonly instanceOptions: BreakoutoutoutOptions;
   private readonly instanceSoundPosition = new THREE.Vector3();
   private readonly instances: BreakoutoutoutInstance[] = [];
   private readonly views = new Map<BreakoutoutoutInstance, InstanceView>();
   private readonly pendingSplits: PendingSplit[] = [];
   private readonly splitBloomPulses: SplitBloomPulse[] = [];
   private readonly splitGlowActiveInstances = new Set<BreakoutoutoutInstance>();
+  private readonly ballSpeedMultiplierTargets = new Map<BreakoutoutoutInstance, number>();
+  private readonly ballSpeedMultiplierTweens = new Map<BreakoutoutoutInstance, BallSpeedMultiplierTween>();
   private readonly postProcessingSettings: PostProcessingSettings = { ...POST_PROCESSING_DEFAULTS };
 
   private nebula: NebulaRuntime | null = null;
@@ -291,6 +303,11 @@ export class BreakoutGame {
 
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
     this.autopilot = options.autopilot ?? false;
+    this.instanceOptions = {
+      autopilot: this.autopilot,
+      sandbox: options.sandbox ?? false,
+      specialBrickKinds: options.specialBrickKinds
+    };
     this.shell = document.createElement('div');
     this.shell.className = 'game-shell';
     root.replaceChildren(this.shell);
@@ -395,7 +412,7 @@ export class BreakoutGame {
     const game = new BreakoutGame(root, options);
     await game.renderer.init();
     game.createNebulaSystem();
-    game.addInstance(new BreakoutoutoutInstance(game.nextInstanceId, undefined, { autopilot: game.autopilot }));
+    game.addInstance(new BreakoutoutoutInstance(game.nextInstanceId, undefined, game.instanceOptions));
     game.nextInstanceId += 1;
     requestAnimationFrame(game.tick);
     return game;
@@ -847,6 +864,7 @@ export class BreakoutGame {
     this.stats.begin();
     this.updateGameSpeedTween(delta);
     this.updatePlaneZTransitions(delta);
+    this.updateBallSpeedMultiplierTweens(delta);
     this.updateSplitBloom(delta);
     this.accumulator += delta;
 
@@ -963,8 +981,8 @@ export class BreakoutGame {
     const sourceZ = sourceView?.group.position.z ?? this.targetPlaneZForIndex(Math.max(0, sourceIndex));
     const clone = new BreakoutoutoutInstance(
       this.nextInstanceId,
-      createSplitRealitySnapshot(pending.snapshot),
-      { autopilot: this.autopilot }
+      createSplitRealitySnapshot(pending.snapshot, { specialBrickKinds: this.instanceOptions.specialBrickKinds }),
+      this.instanceOptions
     );
     this.nextInstanceId += 1;
     const view = this.addInstance(clone);
@@ -1127,9 +1145,56 @@ export class BreakoutGame {
   }
 
   private syncBallSpeedForAll(): void {
-    const nextBallSpeedMultiplier = this.ballSpeedMultiplierForActiveGames(this.activeGameCount);
+    const selectedInstance = this.instances[this.selectedIndex];
+    const backgroundBallSpeedMultiplier = this.ballSpeedMultiplierForActiveGames(this.activeGameCount);
     for (const instance of this.instances) {
-      instance.setBallSpeedMultiplier(nextBallSpeedMultiplier);
+      const nextBallSpeedMultiplier = instance === selectedInstance ? 1 : backgroundBallSpeedMultiplier;
+      this.setBallSpeedMultiplierTarget(instance, nextBallSpeedMultiplier, instance === selectedInstance);
+    }
+  }
+
+  private setBallSpeedMultiplierTarget(
+    instance: BreakoutoutoutInstance,
+    multiplier: number,
+    smooth: boolean
+  ): void {
+    if (this.ballSpeedMultiplierTargets.get(instance) === multiplier) {
+      return;
+    }
+
+    this.ballSpeedMultiplierTargets.set(instance, multiplier);
+    const currentMultiplier = instance.getBallSpeedMultiplier();
+    if (Math.abs(currentMultiplier - multiplier) <= BALL_SPEED_MULTIPLIER_EPSILON) {
+      this.ballSpeedMultiplierTweens.delete(instance);
+      instance.setBallSpeedMultiplier(multiplier);
+      return;
+    }
+
+    if (smooth) {
+      this.ballSpeedMultiplierTweens.set(instance, {
+        from: currentMultiplier,
+        to: multiplier,
+        elapsed: 0,
+        duration: BALL_SPEED_MULTIPLIER_TWEEN_DURATION
+      });
+      return;
+    }
+
+    this.ballSpeedMultiplierTweens.delete(instance);
+    instance.setBallSpeedMultiplier(multiplier);
+  }
+
+  private updateBallSpeedMultiplierTweens(delta: number): void {
+    for (const [instance, tween] of this.ballSpeedMultiplierTweens) {
+      tween.elapsed += delta;
+      const progress = clamp(tween.elapsed / Math.max(tween.duration, 0.001), 0, 1);
+      const nextMultiplier = lerp(tween.from, tween.to, easeInOutCubic(progress));
+      instance.setBallSpeedMultiplier(nextMultiplier);
+
+      if (progress >= 1) {
+        instance.setBallSpeedMultiplier(tween.to);
+        this.ballSpeedMultiplierTweens.delete(instance);
+      }
     }
   }
 
@@ -1323,6 +1388,7 @@ export class BreakoutGame {
     if (nextView && nextView !== previousView) {
       this.applyInstanceOpacity(nextView);
     }
+    this.syncBallSpeedForAll();
   }
 
   private updateInstanceOpacity(): void {

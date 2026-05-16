@@ -41,6 +41,8 @@ const MIN_MOVING_BALL_SPEED = 0.0001;
 
 export type Phase = 'ready' | 'playing' | 'cleared' | 'game-over';
 export type BrickKind = 'normal' | 'splitter' | 'autopilot' | 'life';
+export const SPECIAL_BRICK_KINDS = ['splitter', 'autopilot', 'life'] as const;
+export type SpecialBrickKind = typeof SPECIAL_BRICK_KINDS[number];
 
 export type BreakoutInput = {
   left: boolean;
@@ -50,6 +52,8 @@ export type BreakoutInput = {
 
 export type BreakoutoutoutOptions = {
   autopilot?: boolean;
+  sandbox?: boolean;
+  specialBrickKinds?: readonly SpecialBrickKind[];
 };
 
 export type BrickSnapshot = {
@@ -90,6 +94,11 @@ export type BreakoutoutoutRenderState = BreakoutoutoutSnapshot & {
 
 type BallSnapshot = BreakoutoutoutSnapshot['ball'];
 
+type SplitRealitySnapshotOptions = {
+  specialBrickKinds?: readonly SpecialBrickKind[];
+  random?: () => number;
+};
+
 export type BreakoutoutoutEvent =
   | { type: 'sound'; name: ToneName }
   | { type: 'brick-hit'; x: number; y: number; color: number; kind: BrickKind }
@@ -101,9 +110,15 @@ type Brick = BrickSnapshot & {
   collider?: Collider;
 };
 
-export function createSplitRealitySnapshot(snapshot: BreakoutoutoutSnapshot, random = Math.random): BreakoutoutoutSnapshot {
+export function createSplitRealitySnapshot(
+  snapshot: BreakoutoutoutSnapshot,
+  optionsOrRandom: SplitRealitySnapshotOptions | (() => number) = {}
+): BreakoutoutoutSnapshot {
+  const options = typeof optionsOrRandom === 'function' ? { random: optionsOrRandom } : optionsOrRandom;
+  const random = options.random ?? Math.random;
+  const specialBrickKinds = createSpecialBrickKindSet(options.specialBrickKinds);
   const clonedBricks = snapshot.bricks.map((brick) => ({ ...brick }));
-  const additions = createSplitBonusBricks(clonedBricks, snapshot.ball, random);
+  const additions = createSplitBonusBricks(clonedBricks, snapshot.ball, specialBrickKinds, random);
 
   return {
     ...snapshot,
@@ -136,10 +151,14 @@ export class BreakoutoutoutInstance {
   private lastBallDirectionX = 0;
   private lastBallDirectionY = 1;
   private readonly persistentAutopilot: boolean;
+  private readonly sandbox: boolean;
+  private readonly specialBrickKinds: ReadonlySet<SpecialBrickKind>;
 
   constructor(id: number, snapshot?: BreakoutoutoutSnapshot, options: BreakoutoutoutOptions = {}) {
     this.id = id;
     this.persistentAutopilot = options.autopilot ?? false;
+    this.sandbox = options.sandbox ?? false;
+    this.specialBrickKinds = createSpecialBrickKindSet(options.specialBrickKinds);
     this.world = new RAPIER.World({ x: 0, y: 0, z: 0 });
     this.eventQueue = new RAPIER.EventQueue(false);
 
@@ -285,6 +304,10 @@ export class BreakoutoutoutInstance {
     }
   }
 
+  getBallSpeedMultiplier(): number {
+    return this.ballSpeedMultiplier;
+  }
+
   setGameSpeed(speed: number): void {
     const nextSpeed = clamp(speed, 0, 1);
     if (nextSpeed === this.gameSpeed) {
@@ -398,7 +421,7 @@ export class BreakoutoutoutInstance {
   }
 
   private createBricks(brickSnapshots?: BrickSnapshot[]): void {
-    const snapshots = brickSnapshots ?? createFreshBrickSnapshots();
+    const snapshots = brickSnapshots ?? createFreshBrickSnapshots(this.specialBrickKinds);
     this.bricks = snapshots.map((snapshot) => ({ ...snapshot }));
     this.brickByCollider.clear();
 
@@ -637,6 +660,16 @@ export class BreakoutoutoutInstance {
   }
 
   private loseLife(): BreakoutoutoutEvent[] {
+    if (this.sandbox) {
+      this.phase = 'ready';
+      this.autoPilotRemaining = 0;
+      this.holdBallOnPaddle();
+      return [
+        { type: 'sound', name: 'life' },
+        { type: 'state-changed' }
+      ];
+    }
+
     this.lives -= 1;
     this.phase = this.lives > 0 ? 'ready' : 'game-over';
     this.autoPilotRemaining = 0;
@@ -731,7 +764,7 @@ export class BreakoutoutoutInstance {
   }
 }
 
-function createFreshBrickSnapshots(): BrickSnapshot[] {
+function createFreshBrickSnapshots(specialBrickKinds: ReadonlySet<SpecialBrickKind>): BrickSnapshot[] {
   const brickWidth = (BOARD_WIDTH - BRICK_LEFT_PAD * 2 - BRICK_GAP * (BRICK_COLS - 1)) / BRICK_COLS;
   const palette = [0xf45b69, 0xf59f00, 0xf7d154, 0x2ec4b6, 0x4cc9f0, 0xa78bfa];
   const splitCol = Math.floor(BRICK_COLS / 2);
@@ -739,7 +772,7 @@ function createFreshBrickSnapshots(): BrickSnapshot[] {
 
   for (let row = 0; row < BRICK_ROWS; row += 1) {
     for (let col = 0; col < BRICK_COLS; col += 1) {
-      const kind = getFreshBrickKind(row, col, splitCol);
+      const kind = getFreshBrickKind(row, col, splitCol, specialBrickKinds);
       const x = -HALF_WIDTH + BRICK_LEFT_PAD + brickWidth / 2 + col * (brickWidth + BRICK_GAP);
       const y = BRICK_TOP_Y - row * (BRICK_HEIGHT + BRICK_GAP);
       const color = getBrickColor(kind, row, palette);
@@ -766,12 +799,15 @@ function createFreshBrickSnapshots(): BrickSnapshot[] {
 function createSplitBonusBricks(
   existingBricks: BrickSnapshot[],
   carriedBall: BallSnapshot,
+  specialBrickKinds: ReadonlySet<SpecialBrickKind>,
   random: () => number
 ): BrickSnapshot[] {
   const brickWidth = (BOARD_WIDTH - BRICK_LEFT_PAD * 2 - BRICK_GAP * (BRICK_COLS - 1)) / BRICK_COLS;
   const normalPalette = [0xf45b69, 0xf59f00, 0xf7d154, 0x2ec4b6, 0x4cc9f0, 0xa78bfa];
   const additions: BrickSnapshot[] = [];
-  const kinds: BrickKind[] = ['splitter', 'normal', 'normal'];
+  const kinds: BrickKind[] = specialBrickKinds.has('splitter')
+    ? ['splitter', 'normal', 'normal']
+    : ['normal', 'normal', 'normal'];
 
   for (let index = 0; index < kinds.length; index += 1) {
     const kind = kinds[index];
@@ -941,16 +977,21 @@ function createBonusBrickSnapshot(
   };
 }
 
-function getFreshBrickKind(row: number, col: number, splitCol: number): BrickKind {
-  if (row === SPLITTER_ROW && col === splitCol) {
+function getFreshBrickKind(
+  row: number,
+  col: number,
+  splitCol: number,
+  specialBrickKinds: ReadonlySet<SpecialBrickKind>
+): BrickKind {
+  if (specialBrickKinds.has('splitter') && row === SPLITTER_ROW && col === splitCol) {
     return 'splitter';
   }
 
-  if (row === AUTOPILOT_ROW && col === AUTOPILOT_COL) {
+  if (specialBrickKinds.has('autopilot') && row === AUTOPILOT_ROW && col === AUTOPILOT_COL) {
     return 'autopilot';
   }
 
-  if (row === LIFE_ROW && col === LIFE_COL) {
+  if (specialBrickKinds.has('life') && row === LIFE_ROW && col === LIFE_COL) {
     return 'life';
   }
 
@@ -1091,6 +1132,10 @@ function shuffle<T>(items: T[], random: () => number): T[] {
 function toBrickSnapshot(brick: Brick): BrickSnapshot {
   const { body: _body, collider: _collider, ...snapshot } = brick;
   return snapshot;
+}
+
+function createSpecialBrickKindSet(kinds: readonly SpecialBrickKind[] | undefined): ReadonlySet<SpecialBrickKind> {
+  return new Set(kinds ?? SPECIAL_BRICK_KINDS);
 }
 
 function clamp(value: number, min: number, max: number): number {
