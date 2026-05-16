@@ -104,7 +104,14 @@ type SplitRealitySnapshotOptions = {
 
 export type BreakoutoutoutEvent =
   | { type: 'sound'; name: ToneName }
-  | { type: 'brick-hit'; x: number; y: number; color: number; kind: BrickKind }
+  | {
+    type: 'brick-hit';
+    x: number;
+    y: number;
+    color: number;
+    kind: BrickKind;
+    points: number;
+  }
   | { type: 'split'; x: number; y: number; color: number; snapshot: BreakoutoutoutSnapshot }
   | { type: 'state-changed' };
 
@@ -605,7 +612,14 @@ export class BreakoutoutoutInstance {
     brick.collider = undefined;
     this.score += brick.points;
 
-    events.push({ type: 'brick-hit', x: brick.x, y: brick.y, color: brick.color, kind: brick.kind });
+    events.push({
+      type: 'brick-hit',
+      x: brick.x,
+      y: brick.y,
+      color: brick.color,
+      kind: brick.kind,
+      points: brick.points
+    });
     events.push({ type: 'sound', name: getBrickSound(brick.kind) });
 
     if (brick.kind === 'splitter') {

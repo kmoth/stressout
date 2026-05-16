@@ -89,10 +89,10 @@ const PLANE_STATUS_Y = -1.05;
 const PLANE_STATUS_Z = 0.88;
 const PLANE_CORNER_HUD_Z = 0.92;
 const PLANE_CORNER_HUD_GAP = 0.28;
-const PLANE_SCORE_WORLD_HEIGHT = 0.42;
-const PLANE_SCORE_MAX_WIDTH = 4.8;
-const PLANE_HEART_WORLD_HEIGHT = 0.34;
-const PLANE_HEART_MAX_WIDTH = 3.8;
+const PLANE_SCORE_WORLD_HEIGHT = 0.84;
+const PLANE_SCORE_MAX_WIDTH = 9.6;
+const PLANE_HEART_WORLD_HEIGHT = 0.68;
+const PLANE_HEART_MAX_WIDTH = 7.6;
 // Change this value to tune the visual z-thickness of the playfield box meshes.
 const PLAYFIELD_MESH_DEPTH = PLAYFIELD_DEPTH;
 const PLAYFIELD_MESH_DEPTH_BASELINE = 0.55;
@@ -330,6 +330,7 @@ export class BreakoutGame {
   private selectedIndex = 0;
   private selectedTrackIndex = 0;
   private hasNavigatedInstances = false;
+  private globalScore = 0;
   private gameSpeed = 1;
   private gameSpeedTween: GameSpeedTween | null = null;
   private splitSequenceActive = false;
@@ -580,8 +581,8 @@ export class BreakoutGame {
       paddingY: 14,
       minWidth: 190,
       minHeight: 78,
-      background: 'rgba(7, 8, 11, 0.68)',
-      border: 'rgba(240, 201, 93, 0.86)',
+      // background: 'rgba(7, 8, 11, 0.68)',
+      // border: 'rgba(240, 201, 93, 0.86)',
       borderWidth: 1,
       radius: 8,
       renderOrder: PLANE_HUD_RENDER_ORDER
@@ -991,6 +992,9 @@ export class BreakoutGame {
       // if (event.type === 'brick-hit') {
       //   this.burst(instance, event.x, event.y, event.color, event.kind);
       // }
+      if (event.type === 'brick-hit') {
+        this.globalScore += event.points;
+      }
 
       if (event.type === 'split') {
         this.queueSplitReality(instance, event.snapshot);
@@ -1286,7 +1290,10 @@ export class BreakoutGame {
 
   private syncViews(time: number): void {
     for (const view of this.views) {
-      const state = view.instance.getRenderState();
+      const state = {
+        ...view.instance.getRenderState(),
+        score: this.globalScore
+      };
       view.renderState = state;
       this.syncInstanceView(view, state, time);
     }
@@ -1350,6 +1357,7 @@ export class BreakoutGame {
     const selected = this.isSelectedView(view);
 
     view.scoreText.setText(state.score.toString().padStart(5, '0'));
+    view.scoreText.mesh.visible = selected;
     this.scalePlaneHudText(view.scoreText, PLANE_SCORE_WORLD_HEIGHT, PLANE_SCORE_MAX_WIDTH);
     view.scoreText.mesh.position.set(
       leftEdge + view.scoreText.mesh.scale.x / 2,
@@ -1387,8 +1395,8 @@ export class BreakoutGame {
 
     if (state.autoPilotActive) {
       return state.autoPilotRemaining > 0
-        ? `autopilot mode ${Math.ceil(state.autoPilotRemaining)}s`
-        : 'autopilot mode';
+        ? `AUTO ${Math.ceil(state.autoPilotRemaining)}s`
+        : 'AUTO';
     }
 
     return PHASE_STATUS_LABEL[state.phase];
