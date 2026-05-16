@@ -5,7 +5,7 @@ import type { ToneName } from './sound';
 export const BOARD_WIDTH = 12;
 export const BOARD_HEIGHT = 16;
 export const WALL_THICKNESS = 0.34;
-export const PLAYFIELD_DEPTH = 0.55;
+export const PLAYFIELD_DEPTH = 0.15;
 export const PADDLE_WIDTH = 2.35;
 export const PADDLE_HEIGHT = 0.34;
 export const PADDLE_DEPTH = PLAYFIELD_DEPTH;

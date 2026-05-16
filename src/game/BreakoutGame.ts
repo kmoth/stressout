@@ -64,6 +64,8 @@ const CAMERA_DISTANCE_PADDING = 1.24;
 const CAMERA_ELEVATION = 0;
 const CAMERA_PARALLAX_X = 1.64;
 const CAMERA_PARALLAX_Y = 1.12;
+const CAMERA_PLANE_TRANSITION_DURATION = 0.9;
+const CAMERA_PLANE_TRANSITION_EPSILON = 0.001;
 const TOUCH_SWIPE_MIN_DISTANCE = 44;
 const TOUCH_SWIPE_AXIS_RATIO = 1.15;
 const SELECTED_OPACITY = 1;
@@ -88,11 +90,13 @@ const PLANE_SCORE_WORLD_HEIGHT = 0.42;
 const PLANE_SCORE_MAX_WIDTH = 4.8;
 const PLANE_HEART_WORLD_HEIGHT = 0.34;
 const PLANE_HEART_MAX_WIDTH = 3.8;
-const DEFAULT_PLAYFIELD_DEPTH = 0.55;
+// Change this value to tune the visual z-thickness of the playfield box meshes.
+const PLAYFIELD_MESH_DEPTH = PLAYFIELD_DEPTH;
+const PLAYFIELD_MESH_DEPTH_BASELINE = 0.55;
 const RENDER_MESH_DEPTHS = {
-  playfield: PLAYFIELD_DEPTH,
-  backboard: PLAYFIELD_DEPTH * (0.2 / DEFAULT_PLAYFIELD_DEPTH),
-  boardMarker: PLAYFIELD_DEPTH * (0.04 / DEFAULT_PLAYFIELD_DEPTH)
+  playfield: PLAYFIELD_MESH_DEPTH,
+  backboard: PLAYFIELD_MESH_DEPTH * (0.2 / PLAYFIELD_MESH_DEPTH_BASELINE),
+  boardMarker: PLAYFIELD_MESH_DEPTH * (0.04 / PLAYFIELD_MESH_DEPTH_BASELINE)
 } as const;
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
 // const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
@@ -201,6 +205,13 @@ type PlaneZTransition = {
   duration: number;
   selectOnComplete: boolean;
   resumeSplitOnComplete?: boolean;
+};
+
+type CameraPlaneTransition = {
+  from: number;
+  to: number;
+  elapsed: number;
+  duration: number;
 };
 
 type GameSpeedTween = {
@@ -312,6 +323,7 @@ export class BreakoutGame {
   private cameraFocusX = 0;
   private cameraFocusY = CAMERA_ELEVATION;
   private cameraFocusZ = 0;
+  private cameraPlaneTransition: CameraPlaneTransition | null = null;
   private activeTouchPointerId: number | null = null;
   private touchStartX = 0;
   private touchStartY = 0;
@@ -1545,6 +1557,41 @@ export class BreakoutGame {
     setMaterialOpacity(mesh.material, opacity);
   }
 
+  private updateCameraPlaneTransition(delta: number): number {
+    const targetZ = this.selectedPlaneZ;
+    const activeTargetZ = this.cameraPlaneTransition?.to ?? this.cameraFocusZ;
+
+    if (Math.abs(targetZ - activeTargetZ) > CAMERA_PLANE_TRANSITION_EPSILON) {
+      if (Math.abs(targetZ - this.cameraFocusZ) <= CAMERA_PLANE_TRANSITION_EPSILON) {
+        this.cameraPlaneTransition = null;
+        return targetZ;
+      }
+
+      this.cameraPlaneTransition = {
+        from: this.cameraFocusZ,
+        to: targetZ,
+        elapsed: 0,
+        duration: CAMERA_PLANE_TRANSITION_DURATION
+      };
+    }
+
+    const transition = this.cameraPlaneTransition;
+    if (!transition) {
+      return this.cameraFocusZ;
+    }
+
+    transition.elapsed += Math.max(delta, 0);
+    const progress = clamp(transition.elapsed / Math.max(transition.duration, 0.001), 0, 1);
+    const focusZ = lerp(transition.from, transition.to, easeInOutCubic(progress));
+
+    if (progress >= 1) {
+      this.cameraPlaneTransition = null;
+      return transition.to;
+    }
+
+    return focusZ;
+  }
+
   private updateCamera(delta: number): void {
     const selectedInstance = this.selectedInstance;
     const selectedState = selectedInstance?.getRenderState();
@@ -1552,11 +1599,11 @@ export class BreakoutGame {
     const ballY = selectedState ? clamp(selectedState.ball.y / HALF_HEIGHT, -1, 1) : 0;
     const targetX = ballX * CAMERA_PARALLAX_X;
     const targetY = CAMERA_ELEVATION + ballY * CAMERA_PARALLAX_Y;
-    const focusZ = this.selectedPlaneZ;
+    const focusZ = this.updateCameraPlaneTransition(delta);
     const blend = 1 - Math.pow(0.0006, Math.max(delta, 0.001));
     this.cameraFocusX += (targetX - this.cameraFocusX) * blend;
     this.cameraFocusY += (targetY - this.cameraFocusY) * blend;
-    this.cameraFocusZ += (focusZ - this.cameraFocusZ) * blend;
+    this.cameraFocusZ = focusZ;
 
     this.camera.position.set(this.cameraFocusX, this.cameraFocusY, this.cameraFocusZ + this.cameraBaseDistance);
     this.camera.lookAt(0, 0, this.cameraFocusZ);
