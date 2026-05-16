@@ -72,6 +72,15 @@ const CAMERA_PARALLAX_X = 1.64;
 const CAMERA_PARALLAX_Y = 1.12;
 const CAMERA_PLANE_TRANSITION_DURATION = 0.9;
 const CAMERA_PLANE_TRANSITION_EPSILON = 0.001;
+const GAME_OVER_CAMERA_ZOOM = 0.72;
+const GAME_OVER_CAMERA_TRACK_X = 0.58;
+const GAME_OVER_CAMERA_TRACK_Y = 0.64;
+const GAME_OVER_CAMERA_PAN_REMAINING_PER_SECOND = 0.08;
+const GAME_OVER_CAMERA_ZOOM_REMAINING_PER_SECOND = 0.12;
+const GAME_OVER_CAMERA_SHAKE_RAMP_DURATION = 0.82;
+const GAME_OVER_CAMERA_SHAKE_X = 0.075;
+const GAME_OVER_CAMERA_SHAKE_Y = 0.052;
+const GAME_OVER_CAMERA_SHAKE_ROLL = 0.0045;
 const TOUCH_SWIPE_MIN_DISTANCE = 44;
 const TOUCH_SWIPE_AXIS_RATIO = 1.15;
 const SELECTED_OPACITY = 1;
@@ -357,9 +366,13 @@ export class BreakoutGame {
   private fatalMissInstance: BreakoutoutoutInstance | null = null;
   private totalGameOver = false;
   private cameraBaseDistance = 24;
+  private cameraDistance = 24;
   private cameraFocusX = 0;
   private cameraFocusY = CAMERA_ELEVATION;
   private cameraFocusZ = 0;
+  private cameraLookAtX = 0;
+  private cameraLookAtY = 0;
+  private gameOverCameraElapsed = 0;
   private cameraPlaneTransition: CameraPlaneTransition | null = null;
   private activeTouchPointerId: number | null = null;
   private touchStartX = 0;
@@ -2106,18 +2119,70 @@ export class BreakoutGame {
   private updateCamera(delta: number): void {
     const selectedInstance = this.selectedInstance;
     const selectedState = selectedInstance?.getRenderState();
-    const ballX = selectedState ? clamp(selectedState.ball.x / HALF_WIDTH, -1, 1) : 0;
-    const ballY = selectedState ? clamp(selectedState.ball.y / HALF_HEIGHT, -1, 1) : 0;
-    const targetX = ballX * CAMERA_PARALLAX_X;
-    const targetY = CAMERA_ELEVATION + ballY * CAMERA_PARALLAX_Y;
+    const gameOverCameraActive = this.isGameOverCameraSequenceActive();
+    const trackedState = gameOverCameraActive
+      ? this.fatalMissInstance?.getRenderState() ?? selectedState
+      : selectedState;
+    const ballX = trackedState ? clamp(trackedState.ball.x / HALF_WIDTH, -1, 1) : 0;
+    const ballY = trackedState ? clamp(trackedState.ball.y / HALF_HEIGHT, -1, 1) : 0;
+    const targetLookAtX = gameOverCameraActive && trackedState
+      ? clamp(trackedState.ball.x * GAME_OVER_CAMERA_TRACK_X, -HALF_WIDTH * 0.72, HALF_WIDTH * 0.72)
+      : 0;
+    const targetLookAtY = gameOverCameraActive && trackedState
+      ? clamp(trackedState.ball.y * GAME_OVER_CAMERA_TRACK_Y, -HALF_HEIGHT * 0.62, HALF_HEIGHT * 0.62)
+      : 0;
+    const targetX = gameOverCameraActive
+      ? targetLookAtX + ballX * CAMERA_PARALLAX_X * 0.24
+      : ballX * CAMERA_PARALLAX_X;
+    const targetY = gameOverCameraActive
+      ? CAMERA_ELEVATION + targetLookAtY + ballY * CAMERA_PARALLAX_Y * 0.18
+      : CAMERA_ELEVATION + ballY * CAMERA_PARALLAX_Y;
+    const targetDistance = this.cameraBaseDistance * (gameOverCameraActive ? GAME_OVER_CAMERA_ZOOM : 1);
     const focusZ = this.updateCameraPlaneTransition(delta);
-    const blend = 1 - Math.pow(0.0006, Math.max(delta, 0.001));
+    const normalizedDelta = Math.max(delta, 0.001);
+    const blend = gameOverCameraActive
+      ? 1 - Math.pow(GAME_OVER_CAMERA_PAN_REMAINING_PER_SECOND, normalizedDelta)
+      : 1 - Math.pow(0.0006, normalizedDelta);
+    const zoomBlend = gameOverCameraActive
+      ? 1 - Math.pow(GAME_OVER_CAMERA_ZOOM_REMAINING_PER_SECOND, normalizedDelta)
+      : blend;
     this.cameraFocusX += (targetX - this.cameraFocusX) * blend;
     this.cameraFocusY += (targetY - this.cameraFocusY) * blend;
+    this.cameraLookAtX += (targetLookAtX - this.cameraLookAtX) * blend;
+    this.cameraLookAtY += (targetLookAtY - this.cameraLookAtY) * blend;
+    this.cameraDistance += (targetDistance - this.cameraDistance) * zoomBlend;
     this.cameraFocusZ = focusZ;
 
-    this.camera.position.set(this.cameraFocusX, this.cameraFocusY, this.cameraFocusZ + this.cameraBaseDistance);
-    this.camera.lookAt(0, 0, this.cameraFocusZ);
+    if (gameOverCameraActive) {
+      this.gameOverCameraElapsed += Math.max(delta, 0);
+    } else {
+      this.gameOverCameraElapsed = 0;
+    }
+
+    const shake = this.gameOverCameraShake();
+    this.camera.position.set(
+      this.cameraFocusX + shake.x,
+      this.cameraFocusY + shake.y,
+      this.cameraFocusZ + this.cameraDistance
+    );
+    this.camera.lookAt(this.cameraLookAtX, this.cameraLookAtY, this.cameraFocusZ);
+    if (shake.roll !== 0) {
+      this.camera.rotateZ(shake.roll);
+    }
+  }
+
+  private gameOverCameraShake(): { x: number; y: number; roll: number } {
+    if (!this.isGameOverCameraSequenceActive()) {
+      return { x: 0, y: 0, roll: 0 };
+    }
+
+    const strength = clamp(this.gameOverCameraElapsed / GAME_OVER_CAMERA_SHAKE_RAMP_DURATION, 0, 1);
+    const time = this.gameOverCameraElapsed;
+    return {
+      x: (Math.sin(time * 29.7) + Math.sin(time * 43.1 + 0.9) * 0.45) * GAME_OVER_CAMERA_SHAKE_X * strength,
+      y: (Math.sin(time * 31.4 + 1.7) + Math.sin(time * 19.8) * 0.5) * GAME_OVER_CAMERA_SHAKE_Y * strength,
+      roll: Math.sin(time * 37.5 + 0.4) * GAME_OVER_CAMERA_SHAKE_ROLL * strength
+    };
   }
 
   private updatePlaneHudBillboards(): void {
@@ -2226,6 +2291,10 @@ export class BreakoutGame {
   private isFatalMissSequenceActive(): boolean {
     return !this.totalGameOver
       && this.fatalMissInstance?.getRenderState().fatalMissPending === true;
+  }
+
+  private isGameOverCameraSequenceActive(): boolean {
+    return this.isFatalMissSequenceActive();
   }
 
   private shouldGreyscaleForFatalMiss(view: InstanceView): boolean {
