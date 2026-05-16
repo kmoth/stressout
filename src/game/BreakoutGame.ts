@@ -486,8 +486,14 @@ export class BreakoutGame {
     this.scene.add(ambient, key, rim);
   }
 
-  private addInstance(instance: BreakoutoutoutInstance): InstanceView {
-    this.instances.push(instance);
+  private addInstance(instance: BreakoutoutoutInstance, insertIndex = this.instances.length): InstanceView {
+    const previousInstanceCount = this.instances.length;
+    const nextIndex = clamp(Math.floor(insertIndex), 0, previousInstanceCount);
+    this.instances.splice(nextIndex, 0, instance);
+    if (previousInstanceCount > 0 && nextIndex <= this.selectedIndex) {
+      this.selectedIndex += 1;
+    }
+
     instance.setGameSpeed(this.gameSpeed);
     this.syncBallSpeedForAll();
     this.reconcilePlaneViews();
@@ -1021,13 +1027,18 @@ export class BreakoutGame {
     const sourceView = this.viewForInstanceNearestTrack(pending.source, this.selectedTrackIndex);
     const sourceIndex = this.instances.indexOf(pending.source);
     const sourceZ = sourceView?.group.position.z ?? this.targetPlaneZForTrack(Math.max(0, sourceIndex));
+    const sourceTrackIndex = sourceView?.trackIndex ?? this.trackIndexForInstanceIndex(Math.max(0, sourceIndex));
+    const insertIndex = this.insertIndexAfterSourceTrack(pending.source, sourceTrackIndex);
     const clone = new BreakoutoutoutInstance(
       this.nextInstanceId,
       createSplitRealitySnapshot(pending.snapshot, { specialBrickKinds: this.instanceOptions.specialBrickKinds }),
       this.instanceOptions
     );
     this.nextInstanceId += 1;
-    const view = this.addInstance(clone);
+    if (sourceTrackIndex < this.selectedTrackIndex) {
+      this.selectedTrackIndex += 1;
+    }
+    const view = this.addInstance(clone, insertIndex);
     const targetZ = this.targetPlaneZForTrack(view.trackIndex);
     const startZ = sourceZ - SPLIT_PLANE_SPAWN_Z_OFFSET;
     view.group.position.z = startZ;
@@ -1497,6 +1508,28 @@ export class BreakoutGame {
 
   private targetPlaneZForTrack(trackIndex: number): number {
     return -trackIndex * PLANE_Z_GAP;
+  }
+
+  private insertIndexAfterSourceTrack(source: BreakoutoutoutInstance, sourceTrackIndex: number): number {
+    const sourceIndex = this.instances.indexOf(source);
+    if (sourceIndex < 0) {
+      return this.instances.length;
+    }
+
+    if (sourceTrackIndex < this.selectedTrackIndex) {
+      return this.selectedIndex;
+    }
+
+    return sourceIndex + 1;
+  }
+
+  private trackIndexForInstanceIndex(instanceIndex: number): number {
+    if (this.instances.length === 0) {
+      return this.selectedTrackIndex;
+    }
+
+    return this.selectedTrackIndex
+      + positiveModulo(instanceIndex - this.selectedIndex, this.instances.length);
   }
 
   private navigateInstances(direction: number): void {
