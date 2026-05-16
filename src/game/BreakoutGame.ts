@@ -263,12 +263,18 @@ type DesiredPlaneView = {
   trackIndex: number;
 };
 
+type InstanceSelection = {
+  index: number;
+  trackOffset: number;
+};
+
 type InstanceView = {
   instance: BreakoutoutoutInstance;
   group: THREE.Group;
   trackIndex: number;
   paddleMesh: THREE.Mesh;
   ballMesh: THREE.Mesh;
+  wallMeshes: THREE.Mesh[];
   bricks: Map<string, THREE.Mesh>;
   activeBrickIds: Set<string>;
   splitGlowMeshes: SplitGlowMesh[];
@@ -278,6 +284,7 @@ type InstanceView = {
   renderState: BreakoutoutoutRenderState;
   appliedOpacity: number;
   targetOpacity: number;
+  terminalVisualsApplied: boolean;
   opacityTween?: InstanceOpacityTween;
   zTransition?: PlaneZTransition;
 };
@@ -536,7 +543,7 @@ export class BreakoutGame {
     const activeBrickIds = new Set<string>();
     const splitGlowMeshes: SplitGlowMesh[] = [];
 
-    this.createWalls(group, splitGlowMeshes);
+    const wallMeshes = this.createWalls(group, splitGlowMeshes);
     splitGlowMeshes.push(this.attachSplitGlow(paddleMesh, PADDLE_EMISSIVE, { baseScale: 1.18, pulseScale: 0.42 }));
     splitGlowMeshes.push(this.attachSplitGlow(ballMesh, 0xffe5a8, { baseScale: 1.75, pulseScale: 0.86 }));
     group.add(paddleMesh, ballMesh, scoreText.mesh, hearts.mesh, statusText.mesh);
@@ -547,6 +554,7 @@ export class BreakoutGame {
       trackIndex,
       paddleMesh,
       ballMesh,
+      wallMeshes,
       bricks,
       activeBrickIds,
       splitGlowMeshes,
@@ -555,7 +563,8 @@ export class BreakoutGame {
       statusText,
       renderState: state,
       appliedOpacity: Number.NaN,
-      targetOpacity: Number.NaN
+      targetOpacity: Number.NaN,
+      terminalVisualsApplied: false
     };
     group.position.set(0, 0, this.targetPlaneZForTrack(trackIndex));
     this.syncInstanceView(view, state, 0);
@@ -624,10 +633,11 @@ export class BreakoutGame {
     group.add(warning);
   }
 
-  private createWalls(group: THREE.Group, splitGlowMeshes: SplitGlowMesh[]): void {
+  private createWalls(group: THREE.Group, splitGlowMeshes: SplitGlowMesh[]): THREE.Mesh[] {
     const wallMaterial = makeFadeableMaterial(new THREE.MeshBasicMaterial({
       color: 0x4d8f99
     }));
+    const wallMeshes: THREE.Mesh[] = [];
     const walls = [
       { x: -HALF_WIDTH - WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
       { x: HALF_WIDTH + WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
@@ -642,8 +652,11 @@ export class BreakoutGame {
       );
       mesh.position.set(wall.x, wall.y, -0.04);
       splitGlowMeshes.push(this.attachSplitGlow(mesh, 0x8ce9df, { baseScale: 1.02, pulseScale: 0.08 }));
+      wallMeshes.push(mesh);
       group.add(mesh);
     }
+
+    return wallMeshes;
   }
 
   private createPaddleMesh(): THREE.Mesh {
@@ -1203,11 +1216,13 @@ export class BreakoutGame {
   }
 
   private updateSplitGlowIntensity(view: InstanceView, intensity: number): void {
+    const visibleIntensity = isTerminalPhase(view.renderState.phase) ? 0 : intensity;
+
     for (const glow of view.splitGlowMeshes) {
-      const opacity = intensity * SPLIT_GLOW_BASE_OPACITY;
+      const opacity = visibleIntensity * SPLIT_GLOW_BASE_OPACITY;
       glow.material.opacity = opacity;
       glow.mesh.visible = opacity > 0.002;
-      glow.mesh.scale.setScalar(glow.baseScale + glow.pulseScale * intensity);
+      glow.mesh.scale.setScalar(glow.baseScale + glow.pulseScale * visibleIntensity);
     }
   }
 
@@ -1219,6 +1234,8 @@ export class BreakoutGame {
   }
 
   private syncBallSpeedForAll(): void {
+    this.ensureSelectedInstanceIsActive(1);
+
     const selectedInstance = this.selectedInstance;
     const backgroundBallSpeedMultiplier = this.ballSpeedMultiplierForActiveGames(this.activeGameCount);
     for (const instance of this.instances) {
@@ -1300,6 +1317,8 @@ export class BreakoutGame {
   }
 
   private syncInstanceView(view: InstanceView, state: BreakoutoutoutRenderState, time: number): void {
+    const terminal = isTerminalPhase(state.phase);
+
     view.paddleMesh.position.set(state.paddleX, PADDLE_Y, 0.06);
     this.updatePaddleAutopilotEffect(view.paddleMesh, state.autoPilotActive, time);
     view.ballMesh.position.set(state.ball.x, state.ball.y, 0.18);
@@ -1337,10 +1356,13 @@ export class BreakoutGame {
         }));
         view.group.add(mesh);
         this.applyMeshOpacity(view, mesh);
+        setMaterialGreyscale(mesh.material, terminal);
       }
 
       mesh.position.set(brick.x, brick.y, Math.sin(time * 1.5 + brick.x * 0.7) * 0.035);
     }
+
+    this.applyInstancePlayStateVisuals(view, terminal);
   }
 
   private removeBrickMesh(view: InstanceView, id: string, mesh: THREE.Mesh): void {
@@ -1412,6 +1434,28 @@ export class BreakoutGame {
     const aspect = plane.cssHeight > 0 ? plane.cssWidth / plane.cssHeight : 1;
     const height = Math.min(preferredHeight, maxWidth / Math.max(aspect, 0.001));
     plane.mesh.scale.set(height * aspect, height, 1);
+  }
+
+  private applyInstancePlayStateVisuals(view: InstanceView, terminal: boolean): void {
+    view.paddleMesh.visible = !terminal;
+    view.ballMesh.visible = !terminal;
+
+    if (view.terminalVisualsApplied === terminal) {
+      return;
+    }
+
+    view.terminalVisualsApplied = terminal;
+    for (const wall of view.wallMeshes) {
+      setMaterialGreyscale(wall.material, terminal);
+    }
+
+    for (const mesh of view.bricks.values()) {
+      setMaterialGreyscale(mesh.material, terminal);
+    }
+
+    if (terminal) {
+      this.updateSplitGlowIntensity(view, 0);
+    }
   }
 
   private updatePaddleAutopilotEffect(mesh: THREE.Mesh, engaged: boolean, time: number): void {
@@ -1565,9 +1609,24 @@ export class BreakoutGame {
       return;
     }
 
+    const step = Math.sign(direction);
+    const hasActiveInstance = this.hasActiveInstance();
+    const activeSelection = hasActiveInstance
+      ? this.findActiveInstanceSelection(this.selectedIndex, step, false)
+      : null;
+    if (hasActiveInstance && !activeSelection) {
+      return;
+    }
+
+    const trackOffset = activeSelection?.trackOffset ?? step;
+    const nextIndex = activeSelection?.index ?? positiveModulo(this.selectedIndex + step, this.instances.length);
+    if (nextIndex === this.selectedIndex) {
+      return;
+    }
+
     this.hasNavigatedInstances = true;
-    this.selectedIndex = positiveModulo(this.selectedIndex + Math.sign(direction), this.instances.length);
-    this.selectedTrackIndex += Math.sign(direction);
+    this.selectedIndex = nextIndex;
+    this.selectedTrackIndex += trackOffset;
     this.reconcilePlaneViews();
     this.syncBallSpeedForAll();
   }
@@ -1577,16 +1636,76 @@ export class BreakoutGame {
       return;
     }
 
-    const nextIndex = positiveModulo(index, this.instances.length);
+    const requestedIndex = positiveModulo(index, this.instances.length);
+    let nextIndex = requestedIndex;
+    let trackOffset = nextIndex - this.selectedIndex;
+
+    if (!this.instances[nextIndex]?.isActive() && this.hasActiveInstance()) {
+      const direction = Math.sign(trackOffset) || 1;
+      const activeSelection = this.findActiveInstanceSelection(requestedIndex, direction, true)
+        ?? this.findActiveInstanceSelection(requestedIndex, -direction, true);
+      if (!activeSelection) {
+        return;
+      }
+
+      nextIndex = activeSelection.index;
+      trackOffset += activeSelection.trackOffset;
+    }
+
     if (nextIndex === this.selectedIndex) {
       return;
     }
 
     this.hasNavigatedInstances = true;
-    this.selectedTrackIndex += nextIndex - this.selectedIndex;
+    this.selectedTrackIndex += trackOffset;
     this.selectedIndex = nextIndex;
     this.reconcilePlaneViews();
     this.syncBallSpeedForAll();
+  }
+
+  private ensureSelectedInstanceIsActive(preferredDirection: number): void {
+    if (this.instances.length === 0 || this.selectedInstance?.isActive() || !this.hasActiveInstance()) {
+      return;
+    }
+
+    const direction = Math.sign(preferredDirection) || 1;
+    const activeSelection = this.findActiveInstanceSelection(this.selectedIndex, direction, false)
+      ?? this.findActiveInstanceSelection(this.selectedIndex, -direction, false);
+    if (!activeSelection) {
+      return;
+    }
+
+    this.hasNavigatedInstances = true;
+    this.clearTouchInput();
+    this.selectedTrackIndex += activeSelection.trackOffset;
+    this.selectedIndex = activeSelection.index;
+    this.reconcilePlaneViews();
+  }
+
+  private hasActiveInstance(): boolean {
+    return this.instances.some((instance) => instance.isActive());
+  }
+
+  private findActiveInstanceSelection(
+    startIndex: number,
+    direction: number,
+    includeStart: boolean
+  ): InstanceSelection | null {
+    if (this.instances.length === 0) {
+      return null;
+    }
+
+    const step = Math.sign(direction) || 1;
+    const firstDistance = includeStart ? 0 : 1;
+    for (let distance = firstDistance; distance < this.instances.length; distance += 1) {
+      const trackOffset = distance * step;
+      const index = positiveModulo(startIndex + trackOffset, this.instances.length);
+      if (this.instances[index]?.isActive()) {
+        return { index, trackOffset };
+      }
+    }
+
+    return null;
   }
 
   private updateInstanceOpacity(): void {
@@ -2483,6 +2602,17 @@ function setMaterialOpacity(material: THREE.Material | THREE.Material[], opacity
   setSingleMaterialOpacity(material, opacity);
 }
 
+function setMaterialGreyscale(material: THREE.Material | THREE.Material[], greyscale: boolean): void {
+  if (Array.isArray(material)) {
+    for (const entry of material) {
+      setSingleMaterialGreyscale(entry, greyscale);
+    }
+    return;
+  }
+
+  setSingleMaterialGreyscale(material, greyscale);
+}
+
 function makeFadeableMaterial<T extends THREE.Material>(material: T): T {
   material.userData.baseOpacity = typeof material.userData.baseOpacity === 'number'
     ? material.userData.baseOpacity
@@ -2504,6 +2634,63 @@ function setSingleMaterialOpacity(material: THREE.Material, opacity: number): vo
   if (renderStateChanged) {
     material.needsUpdate = true;
   }
+}
+
+function setSingleMaterialGreyscale(material: THREE.Material, greyscale: boolean): void {
+  if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshStandardMaterial) {
+    const baseColor = materialBaseColor(material);
+    material.color.setHex(greyscale ? greyscaleHex(baseColor) : baseColor);
+  }
+
+  if (material instanceof THREE.MeshStandardMaterial) {
+    const baseEmissive = materialBaseEmissive(material);
+    const baseEmissiveIntensity = materialBaseEmissiveIntensity(material);
+    material.emissive.setHex(greyscale ? greyscaleHex(baseEmissive) : baseEmissive);
+    material.emissiveIntensity = greyscale ? baseEmissiveIntensity * 0.16 : baseEmissiveIntensity;
+  }
+}
+
+function materialBaseColor(material: THREE.MeshBasicMaterial | THREE.MeshStandardMaterial): number {
+  const storedColor = material.userData.baseColor;
+  if (typeof storedColor === 'number') {
+    return storedColor;
+  }
+
+  const baseColor = material.color.getHex();
+  material.userData.baseColor = baseColor;
+  return baseColor;
+}
+
+function materialBaseEmissive(material: THREE.MeshStandardMaterial): number {
+  const storedEmissive = material.userData.baseEmissive;
+  if (typeof storedEmissive === 'number') {
+    return storedEmissive;
+  }
+
+  const baseEmissive = material.emissive.getHex();
+  material.userData.baseEmissive = baseEmissive;
+  return baseEmissive;
+}
+
+function materialBaseEmissiveIntensity(material: THREE.MeshStandardMaterial): number {
+  const storedIntensity = material.userData.baseEmissiveIntensity;
+  if (typeof storedIntensity === 'number') {
+    return storedIntensity;
+  }
+
+  const baseIntensity = material.emissiveIntensity;
+  material.userData.baseEmissiveIntensity = baseIntensity;
+  return baseIntensity;
+}
+
+function greyscaleHex(hex: number): number {
+  const color = new THREE.Color(hex);
+  const level = Math.round(clamp(color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722, 0.18, 0.74) * 255);
+  return (level << 16) | (level << 8) | level;
+}
+
+function isTerminalPhase(phase: BreakoutoutoutRenderState['phase']): boolean {
+  return phase === 'game-over' || phase === 'cleared';
 }
 
 function disposeObject(object: THREE.Object3D): void {
