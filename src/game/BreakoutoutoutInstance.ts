@@ -239,13 +239,12 @@ export class BreakoutoutoutInstance {
       return [];
     }
 
-    const angle = -0.38 + Math.random() * 0.76;
     this.phase = 'playing';
     this.readyRemaining = 0;
     this.ballBody.setLinvel(
       {
-        x: Math.sin(angle) * this.launchBallSpeed,
-        y: Math.cos(angle) * this.launchBallSpeed,
+        x: 0,
+        y: this.launchBallSpeed,
         z: 0
       },
       true
