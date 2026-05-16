@@ -57,6 +57,7 @@ const SPLIT_PLANE_SPAWN_Z_OFFSET = 0.36;
 const SPLIT_BLOOM_DURATION = 1.2;
 const SPLIT_GLOW_BASE_OPACITY = 0.3;
 const BALL_SPEED_ACTIVE_GAME_SCALE = 0.5;
+const DEFAULT_BALL_SPEED_MULTIPLIER_ACTIVE_GAME_CAP = 4;
 const BALL_SPEED_MULTIPLIER_TWEEN_DURATION = 2;
 const BALL_SPEED_MULTIPLIER_EPSILON = 0.0001;
 const CAMERA_FOV = 59;
@@ -272,6 +273,7 @@ type InstanceView = {
 
 export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot' | 'sandbox' | 'specialBrickKinds'> & {
   initialInstanceCount?: number;
+  ballSpeedMultiplierActiveGameCap?: number;
 };
 
 export class BreakoutGame {
@@ -298,6 +300,7 @@ export class BreakoutGame {
   private readonly planeHudCameraQuaternion = new THREE.Quaternion();
   // private readonly particleTexture: THREE.CanvasTexture;
   private readonly autopilot: boolean;
+  private readonly ballSpeedMultiplierActiveGameCap: number;
   private readonly instanceOptions: BreakoutoutoutOptions;
   private readonly instanceSoundPosition = new THREE.Vector3();
   private readonly instances: BreakoutoutoutInstance[] = [];
@@ -333,6 +336,9 @@ export class BreakoutGame {
 
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
     this.autopilot = options.autopilot ?? false;
+    this.ballSpeedMultiplierActiveGameCap = normalizeBallSpeedMultiplierActiveGameCap(
+      options.ballSpeedMultiplierActiveGameCap
+    );
     this.instanceOptions = {
       autopilot: this.autopilot,
       sandbox: options.sandbox ?? false,
@@ -1254,7 +1260,8 @@ export class BreakoutGame {
   }
 
   private ballSpeedMultiplierForActiveGames(activeGameCount: number): number {
-    return BALL_SPEED_ACTIVE_GAME_SCALE ** (activeGameCount - 1);
+    const effectiveActiveGameCount = Math.min(activeGameCount, this.ballSpeedMultiplierActiveGameCap);
+    return BALL_SPEED_ACTIVE_GAME_SCALE ** (effectiveActiveGameCount - 1);
   }
 
   private get activeGameCount(): number {
@@ -2483,4 +2490,12 @@ function normalizeInitialInstanceCount(count: number | undefined): number {
   }
 
   return clamp(Math.floor(count), DEFAULT_INITIAL_INSTANCE_COUNT, MAX_INITIAL_INSTANCE_COUNT);
+}
+
+function normalizeBallSpeedMultiplierActiveGameCap(count: number | undefined): number {
+  if (typeof count !== 'number' || !Number.isFinite(count)) {
+    return DEFAULT_BALL_SPEED_MULTIPLIER_ACTIVE_GAME_CAP;
+  }
+
+  return Math.max(1, Math.floor(count));
 }

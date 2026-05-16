@@ -15,6 +15,12 @@ const SPECIAL_BRICK_KIND_ALIASES: Readonly<Record<string, SpecialBrickKind>> = {
 };
 
 const root = document.querySelector<HTMLDivElement>('#app');
+const BALL_SPEED_MULTIPLIER_CAP_PARAM_NAMES = [
+  'ballSpeedMultiplierActiveGameCap',
+  'ballSpeedMultiplierInstanceCap',
+  'ballSpeedCapInstances',
+  'ballSpeedCap'
+] as const;
 
 if (!root) {
   throw new Error('Missing #app root element.');
@@ -25,8 +31,15 @@ const autopilot = parseBooleanParam(searchParams, 'autopilot');
 const sandbox = parseBooleanParam(searchParams, 'sandbox') || parseBooleanParam(searchParams, 'sandboxMode');
 const specialBrickKinds = parseSpecialBrickKinds(searchParams);
 const initialInstanceCount = parseIntegerParam(searchParams, ['instances', 'instanceCount', 'initialInstances']);
+const ballSpeedMultiplierActiveGameCap = parseIntegerParam(searchParams, BALL_SPEED_MULTIPLIER_CAP_PARAM_NAMES);
 
-BreakoutGame.create(root, { autopilot, sandbox, specialBrickKinds, initialInstanceCount }).catch((error: unknown) => {
+BreakoutGame.create(root, {
+  autopilot,
+  sandbox,
+  specialBrickKinds,
+  initialInstanceCount,
+  ballSpeedMultiplierActiveGameCap
+}).catch((error: unknown) => {
   console.error(error);
   root.innerHTML = `
     <main class="boot-error">
