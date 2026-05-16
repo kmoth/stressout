@@ -9,7 +9,7 @@ export const PLAYFIELD_DEPTH = 0.15;
 export const PADDLE_WIDTH = 2.35;
 export const PADDLE_HEIGHT = 0.34;
 export const PADDLE_DEPTH = PLAYFIELD_DEPTH;
-export const PADDLE_Y = -6.45;
+export const PADDLE_Y = -5.95;
 export const PADDLE_SPEED = 11.5;
 export const BALL_RADIUS = 0.22;
 export const BALL_SPEED = 7.1;
@@ -40,6 +40,7 @@ const SPLITTER_BALL_SAFE_SECONDS = 0.42;
 const SPLITTER_BALL_SAFE_PADDING = 0.72;
 const MIN_MOVING_BALL_SPEED = 0.0001;
 const READY_DURATION = 5;
+const FATAL_MISS_Y = PADDLE_Y - PADDLE_HEIGHT / 2 - BALL_RADIUS;
 
 export type Phase = 'ready' | 'playing' | 'cleared' | 'game-over';
 export type BrickKind = 'normal' | 'splitter' | 'autopilot' | 'life';
@@ -77,6 +78,7 @@ export type BreakoutoutoutSnapshot = {
   lives: number;
   phase: Phase;
   readyRemaining: number;
+  fatalMissPending: boolean;
   paddleX: number;
   targetPaddleX: number;
   autoPilotRemaining: number;
@@ -113,6 +115,7 @@ export type BreakoutoutoutEvent =
     points: number;
   }
   | { type: 'split'; x: number; y: number; color: number; snapshot: BreakoutoutoutSnapshot }
+  | { type: 'fatal-miss' }
   | { type: 'state-changed' };
 
 type Brick = BrickSnapshot & {
@@ -154,6 +157,7 @@ export class BreakoutoutoutInstance {
   private lives = 3;
   private phase: Phase = 'ready';
   private readyRemaining = READY_DURATION;
+  private fatalMissPending = false;
   private paddleX = 0;
   private targetPaddleX = 0;
   private autoPilotRemaining = 0;
@@ -180,6 +184,7 @@ export class BreakoutoutoutInstance {
       this.readyRemaining = snapshot.phase === 'ready'
         ? clamp(snapshot.readyRemaining ?? READY_DURATION, 0, READY_DURATION)
         : 0;
+      this.fatalMissPending = snapshot.fatalMissPending ?? false;
       this.paddleX = snapshot.paddleX;
       this.targetPaddleX = snapshot.targetPaddleX;
       this.autoPilotRemaining = snapshot.autoPilotRemaining ?? 0;
@@ -197,6 +202,7 @@ export class BreakoutoutoutInstance {
 
   step(delta: number, input: BreakoutInput): BreakoutoutoutEvent[] {
     const events: BreakoutoutoutEvent[] = [];
+    events.push(...this.updateFatalMissPending());
     this.updatePaddle(delta, input);
 
     if (this.phase === 'ready') {
@@ -219,6 +225,9 @@ export class BreakoutoutoutInstance {
       this.autoPilotRemaining = Math.max(0, this.autoPilotRemaining - delta * this.gameSpeed);
     }
     events.push(...this.resolveCollisions());
+    if (this.phase === 'playing') {
+      events.push(...this.updateFatalMissPending());
+    }
     if (this.phase === 'playing') {
       this.keepBallPlanar();
     }
@@ -255,6 +264,7 @@ export class BreakoutoutoutInstance {
 
     this.score = 0;
     this.lives = 3;
+    this.fatalMissPending = false;
     this.setReadyPhase();
     this.paddleX = 0;
     this.targetPaddleX = 0;
@@ -276,6 +286,7 @@ export class BreakoutoutoutInstance {
       lives: this.lives,
       phase: this.phase,
       readyRemaining: this.readyRemaining,
+      fatalMissPending: this.fatalMissPending,
       paddleX: this.paddleX,
       targetPaddleX: this.targetPaddleX,
       autoPilotRemaining: this.autoPilotRemaining,
@@ -301,6 +312,7 @@ export class BreakoutoutoutInstance {
       lives: this.lives,
       phase: this.phase,
       readyRemaining: this.readyRemaining,
+      fatalMissPending: this.fatalMissPending,
       paddleX: this.paddleX,
       targetPaddleX: this.targetPaddleX,
       autoPilotRemaining: this.autoPilotRemaining,
@@ -373,8 +385,22 @@ export class BreakoutoutoutInstance {
     return this.phase === 'cleared';
   }
 
+  forceGameOver(): BreakoutoutoutEvent[] {
+    if (this.phase === 'game-over') {
+      return [];
+    }
+
+    this.phase = 'game-over';
+    this.readyRemaining = 0;
+    this.lives = 0;
+    this.fatalMissPending = false;
+    this.autoPilotRemaining = 0;
+    this.holdBallOnPaddle();
+    return [{ type: 'state-changed' }];
+  }
+
   placePaddleAt(x: number): void {
-    if (!this.isActive()) {
+    if (!this.isActive() || this.fatalMissPending) {
       return;
     }
 
@@ -475,6 +501,11 @@ export class BreakoutoutoutInstance {
   private updatePaddle(delta: number, input: BreakoutInput): void {
     const maxStep = PADDLE_SPEED * this.gameSpeed * delta;
 
+    if (this.fatalMissPending) {
+      this.syncPaddleBody();
+      return;
+    }
+
     if (this.phase === 'playing' && this.isAutopilotActive) {
       const ballX = this.ballBody.translation().x;
       const step = clamp(ballX - this.paddleX, -maxStep, maxStep);
@@ -531,6 +562,23 @@ export class BreakoutoutoutInstance {
   private setReadyPhase(): void {
     this.phase = 'ready';
     this.readyRemaining = READY_DURATION;
+    this.fatalMissPending = false;
+  }
+
+  private updateFatalMissPending(): BreakoutoutoutEvent[] {
+    const nextPending = !this.sandbox
+      && this.phase === 'playing'
+      && this.lives === 1
+      && this.ballBody.translation().y < FATAL_MISS_Y;
+
+    if (nextPending === this.fatalMissPending) {
+      return [];
+    }
+
+    this.fatalMissPending = nextPending;
+    return nextPending
+      ? [{ type: 'fatal-miss' }, { type: 'state-changed' }]
+      : [{ type: 'state-changed' }];
   }
 
   private resolveCollisions(): BreakoutoutoutEvent[] {
@@ -715,6 +763,7 @@ export class BreakoutoutoutInstance {
       this.phase = 'game-over';
       this.readyRemaining = 0;
     }
+    this.fatalMissPending = false;
     this.autoPilotRemaining = 0;
     this.holdBallOnPaddle();
     return [

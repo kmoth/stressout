@@ -60,6 +60,11 @@ const BALL_SPEED_ACTIVE_GAME_SCALE = 0.5;
 const DEFAULT_BALL_SPEED_MULTIPLIER_ACTIVE_GAME_CAP = 4;
 const BALL_SPEED_MULTIPLIER_TWEEN_DURATION = 2;
 const BALL_SPEED_MULTIPLIER_EPSILON = 0.0001;
+const FATAL_MISS_BALL_SPEED_MULTIPLIER = 0.08;
+const FATAL_MISS_BALL_SPEED_TWEEN_DURATION = 0.28;
+const FATAL_MISS_DANGER_COLOR = 0xff1f2d;
+const FATAL_MISS_DANGER_EMISSIVE = 0xff0000;
+const FATAL_MISS_DANGER_PERIOD = 1.65;
 const CAMERA_FOV = 59;
 const CAMERA_DISTANCE_PADDING = 1.24;
 const CAMERA_ELEVATION = 0;
@@ -285,6 +290,8 @@ type InstanceView = {
   appliedOpacity: number;
   targetOpacity: number;
   terminalVisualsApplied: boolean;
+  dangerVisualsApplied: boolean;
+  fatalGreyscaleApplied: boolean;
   opacityTween?: InstanceOpacityTween;
   zTransition?: PlaneZTransition;
 };
@@ -341,6 +348,8 @@ export class BreakoutGame {
   private gameSpeed = 1;
   private gameSpeedTween: GameSpeedTween | null = null;
   private splitSequenceActive = false;
+  private fatalMissInstance: BreakoutoutoutInstance | null = null;
+  private totalGameOver = false;
   private cameraBaseDistance = 24;
   private cameraFocusX = 0;
   private cameraFocusY = CAMERA_ELEVATION;
@@ -564,7 +573,9 @@ export class BreakoutGame {
       renderState: state,
       appliedOpacity: Number.NaN,
       targetOpacity: Number.NaN,
-      terminalVisualsApplied: false
+      terminalVisualsApplied: false,
+      dangerVisualsApplied: false,
+      fatalGreyscaleApplied: false
     };
     group.position.set(0, 0, this.targetPlaneZForTrack(trackIndex));
     this.syncInstanceView(view, state, 0);
@@ -835,7 +846,7 @@ export class BreakoutGame {
   }
 
   private updateTouchPaddle(clientX: number, clientY: number): void {
-    if (this.autopilot) {
+    if (this.autopilot || this.totalGameOver || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -881,6 +892,10 @@ export class BreakoutGame {
   }
 
   private handleTouchGestureEnd(): void {
+    if (this.totalGameOver || this.isFatalMissSequenceActive()) {
+      return;
+    }
+
     const deltaX = this.touchLastX - this.touchStartX;
     const deltaY = this.touchLastY - this.touchStartY;
     const absX = Math.abs(deltaX);
@@ -950,9 +965,10 @@ export class BreakoutGame {
     this.accumulator += delta;
 
     while (this.accumulator >= FIXED_STEP) {
+      const allowPaddleInput = !this.totalGameOver && !this.isFatalMissSequenceActive();
       for (let index = 0; index < this.instances.length; index += 1) {
         const instance = this.instances[index];
-        const input = !this.autopilot && index === this.selectedIndex && instance.isActive()
+        const input = allowPaddleInput && !this.autopilot && index === this.selectedIndex && instance.isActive()
           ? this.currentInput
           : IDLE_INPUT;
         this.handleInstanceEvents(instance, instance.step(FIXED_STEP, input));
@@ -970,7 +986,7 @@ export class BreakoutGame {
   };
 
   private launchOrAdvanceSelected(): void {
-    if (this.splitSequenceActive) {
+    if (this.splitSequenceActive || this.totalGameOver || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -983,6 +999,10 @@ export class BreakoutGame {
   }
 
   private restartSelected(): void {
+    if (this.totalGameOver || this.isFatalMissSequenceActive()) {
+      return;
+    }
+
     const selected = this.selectedInstance;
     if (selected?.isActive()) {
       this.handleInstanceEvents(selected, selected.restart());
@@ -1013,14 +1033,51 @@ export class BreakoutGame {
         this.queueSplitReality(instance, event.snapshot);
       }
 
+      if (event.type === 'fatal-miss') {
+        this.startFatalMissSequence(instance);
+      }
+
       if (event.type === 'state-changed') {
         shouldSyncBallSpeed = true;
       }
     }
 
+    if (instance.getRenderState().phase === 'game-over') {
+      this.triggerTotalGameOver(instance);
+      return;
+    }
+
     if (shouldSyncBallSpeed) {
       this.syncBallSpeedForAll();
     }
+  }
+
+  private startFatalMissSequence(instance: BreakoutoutoutInstance): void {
+    if (this.totalGameOver || this.fatalMissInstance === instance) {
+      return;
+    }
+
+    this.fatalMissInstance = instance;
+    this.clearTouchInput();
+    this.focusInstance(instance);
+    this.syncBallSpeedForAll();
+  }
+
+  private triggerTotalGameOver(source: BreakoutoutoutInstance): void {
+    if (this.totalGameOver) {
+      return;
+    }
+
+    this.totalGameOver = true;
+    this.fatalMissInstance = source;
+    this.clearTouchInput();
+    this.focusInstance(source);
+
+    for (const instance of this.instances) {
+      instance.forceGameOver();
+    }
+
+    this.syncBallSpeedForAll();
   }
 
   private volumeForInstance(instance: BreakoutoutoutInstance): number {
@@ -1234,6 +1291,18 @@ export class BreakoutGame {
   }
 
   private syncBallSpeedForAll(): void {
+    if (this.totalGameOver || this.isFatalMissSequenceActive()) {
+      for (const instance of this.instances) {
+        this.setBallSpeedMultiplierTarget(
+          instance,
+          FATAL_MISS_BALL_SPEED_MULTIPLIER,
+          true,
+          FATAL_MISS_BALL_SPEED_TWEEN_DURATION
+        );
+      }
+      return;
+    }
+
     this.ensureSelectedInstanceIsActive(1);
 
     const selectedInstance = this.selectedInstance;
@@ -1247,7 +1316,8 @@ export class BreakoutGame {
   private setBallSpeedMultiplierTarget(
     instance: BreakoutoutoutInstance,
     multiplier: number,
-    smooth: boolean
+    smooth: boolean,
+    duration = BALL_SPEED_MULTIPLIER_TWEEN_DURATION
   ): void {
     if (this.ballSpeedMultiplierTargets.get(instance) === multiplier) {
       return;
@@ -1266,7 +1336,7 @@ export class BreakoutGame {
         from: currentMultiplier,
         to: multiplier,
         elapsed: 0,
-        duration: BALL_SPEED_MULTIPLIER_TWEEN_DURATION
+        duration
       });
       return;
     }
@@ -1363,6 +1433,8 @@ export class BreakoutGame {
     }
 
     this.applyInstancePlayStateVisuals(view, terminal);
+    this.updateFatalMissGreyscaleVisuals(view, this.shouldGreyscaleForFatalMiss(view), terminal, time);
+    this.updateDangerVisuals(view, state.fatalMissPending && !terminal, terminal, time);
   }
 
   private removeBrickMesh(view: InstanceView, id: string, mesh: THREE.Mesh): void {
@@ -1455,6 +1527,60 @@ export class BreakoutGame {
 
     if (terminal) {
       this.updateSplitGlowIntensity(view, 0);
+    }
+  }
+
+  private updateFatalMissGreyscaleVisuals(
+    view: InstanceView,
+    active: boolean,
+    terminal: boolean,
+    time: number
+  ): void {
+    if (!active) {
+      if (view.fatalGreyscaleApplied) {
+        view.fatalGreyscaleApplied = false;
+        this.restoreFatalMissGreyscaleVisuals(view, terminal, time);
+      }
+      return;
+    }
+
+    view.fatalGreyscaleApplied = true;
+    view.group.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        setMaterialGreyscale(object.material, true);
+      }
+    });
+  }
+
+  private updateDangerVisuals(view: InstanceView, active: boolean, terminal: boolean, time: number): void {
+    if (!active) {
+      if (view.dangerVisualsApplied) {
+        view.dangerVisualsApplied = false;
+        this.restoreFatalMissGreyscaleVisuals(view, terminal, time);
+      }
+      return;
+    }
+
+    const pulse = (Math.sin((time / FATAL_MISS_DANGER_PERIOD) * Math.PI * 2) + 1) / 2;
+    const intensity = 0.48 + pulse * 0.52;
+    view.dangerVisualsApplied = true;
+    view.group.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        setMaterialDanger(object.material, intensity);
+      }
+    });
+  }
+
+  private restoreFatalMissGreyscaleVisuals(view: InstanceView, terminal: boolean, time: number): void {
+    const greyscale = terminal || this.shouldGreyscaleForFatalMiss(view);
+    view.group.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        setMaterialGreyscale(object.material, greyscale);
+      }
+    });
+
+    if (!greyscale && !terminal) {
+      this.updatePaddleAutopilotEffect(view.paddleMesh, view.renderState.autoPilotActive, time);
     }
   }
 
@@ -1605,7 +1731,13 @@ export class BreakoutGame {
   }
 
   private navigateInstances(direction: number): void {
-    if (this.instances.length <= 1 || direction === 0 || this.splitSequenceActive) {
+    if (
+      this.instances.length <= 1
+      || direction === 0
+      || this.splitSequenceActive
+      || this.totalGameOver
+      || this.isFatalMissSequenceActive()
+    ) {
       return;
     }
 
@@ -1627,6 +1759,29 @@ export class BreakoutGame {
     this.hasNavigatedInstances = true;
     this.selectedIndex = nextIndex;
     this.selectedTrackIndex += trackOffset;
+    this.reconcilePlaneViews();
+    this.syncBallSpeedForAll();
+  }
+
+  private focusInstance(instance: BreakoutoutoutInstance): void {
+    const nextIndex = this.instances.indexOf(instance);
+    if (nextIndex < 0) {
+      return;
+    }
+
+    const nearestView = this.viewForInstanceNearestTrack(instance, this.selectedTrackIndex);
+    const trackOffset = nearestView
+      ? nearestView.trackIndex - this.selectedTrackIndex
+      : nextIndex - this.selectedIndex;
+
+    if (nextIndex === this.selectedIndex && trackOffset === 0) {
+      return;
+    }
+
+    this.hasNavigatedInstances = true;
+    this.clearTouchInput();
+    this.selectedTrackIndex += trackOffset;
+    this.selectedIndex = nextIndex;
     this.reconcilePlaneViews();
     this.syncBallSpeedForAll();
   }
@@ -1938,6 +2093,15 @@ export class BreakoutGame {
 
   private get selectedView(): InstanceView | null {
     return this.viewForInstanceAtTrack(this.selectedInstance, this.selectedTrackIndex);
+  }
+
+  private isFatalMissSequenceActive(): boolean {
+    return !this.totalGameOver
+      && this.fatalMissInstance?.getRenderState().fatalMissPending === true;
+  }
+
+  private shouldGreyscaleForFatalMiss(view: InstanceView): boolean {
+    return this.isFatalMissSequenceActive() && view.instance !== this.fatalMissInstance;
   }
 
   private isSelectedView(view: InstanceView): boolean {
@@ -2613,10 +2777,28 @@ function setMaterialGreyscale(material: THREE.Material | THREE.Material[], greys
   setSingleMaterialGreyscale(material, greyscale);
 }
 
+function setMaterialDanger(material: THREE.Material | THREE.Material[], intensity: number): void {
+  if (Array.isArray(material)) {
+    for (const entry of material) {
+      setSingleMaterialDanger(entry, intensity);
+    }
+    return;
+  }
+
+  setSingleMaterialDanger(material, intensity);
+}
+
 function makeFadeableMaterial<T extends THREE.Material>(material: T): T {
   material.userData.baseOpacity = typeof material.userData.baseOpacity === 'number'
     ? material.userData.baseOpacity
     : material.opacity;
+  if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshStandardMaterial) {
+    material.userData.baseColor = material.color.getHex();
+  }
+  if (material instanceof THREE.MeshStandardMaterial) {
+    material.userData.baseEmissive = material.emissive.getHex();
+    material.userData.baseEmissiveIntensity = material.emissiveIntensity;
+  }
   material.transparent = true;
   material.depthWrite = false;
   return material;
@@ -2647,6 +2829,22 @@ function setSingleMaterialGreyscale(material: THREE.Material, greyscale: boolean
     const baseEmissiveIntensity = materialBaseEmissiveIntensity(material);
     material.emissive.setHex(greyscale ? greyscaleHex(baseEmissive) : baseEmissive);
     material.emissiveIntensity = greyscale ? baseEmissiveIntensity * 0.16 : baseEmissiveIntensity;
+  }
+}
+
+function setSingleMaterialDanger(material: THREE.Material, intensity: number): void {
+  const clampedIntensity = clamp(intensity, 0, 1);
+
+  if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshStandardMaterial) {
+    const color = new THREE.Color(materialBaseColor(material));
+    color.lerp(new THREE.Color(FATAL_MISS_DANGER_COLOR), 0.62 + clampedIntensity * 0.34);
+    material.color.copy(color);
+  }
+
+  if (material instanceof THREE.MeshStandardMaterial) {
+    const baseEmissiveIntensity = materialBaseEmissiveIntensity(material);
+    material.emissive.setHex(FATAL_MISS_DANGER_EMISSIVE);
+    material.emissiveIntensity = baseEmissiveIntensity * 0.35 + 0.75 + clampedIntensity * 1.75;
   }
 }
 
