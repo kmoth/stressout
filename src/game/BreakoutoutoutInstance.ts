@@ -39,6 +39,7 @@ const SPLIT_BONUS_MAX_Y = BRICK_TOP_Y + 0.1;
 const SPLITTER_BALL_SAFE_SECONDS = 0.42;
 const SPLITTER_BALL_SAFE_PADDING = 0.72;
 const MIN_MOVING_BALL_SPEED = 0.0001;
+const READY_DURATION = 5;
 
 export type Phase = 'ready' | 'playing' | 'cleared' | 'game-over';
 export type BrickKind = 'normal' | 'splitter' | 'autopilot' | 'life';
@@ -75,6 +76,7 @@ export type BreakoutoutoutSnapshot = {
   score: number;
   lives: number;
   phase: Phase;
+  readyRemaining: number;
   paddleX: number;
   targetPaddleX: number;
   autoPilotRemaining: number;
@@ -144,6 +146,7 @@ export class BreakoutoutoutInstance {
   private score = 0;
   private lives = 3;
   private phase: Phase = 'ready';
+  private readyRemaining = READY_DURATION;
   private paddleX = 0;
   private targetPaddleX = 0;
   private autoPilotRemaining = 0;
@@ -167,6 +170,9 @@ export class BreakoutoutoutInstance {
       this.score = snapshot.score;
       this.lives = snapshot.lives;
       this.phase = snapshot.phase;
+      this.readyRemaining = snapshot.phase === 'ready'
+        ? clamp(snapshot.readyRemaining ?? READY_DURATION, 0, READY_DURATION)
+        : 0;
       this.paddleX = snapshot.paddleX;
       this.targetPaddleX = snapshot.targetPaddleX;
       this.autoPilotRemaining = snapshot.autoPilotRemaining ?? 0;
@@ -185,6 +191,15 @@ export class BreakoutoutoutInstance {
   step(delta: number, input: BreakoutInput): BreakoutoutoutEvent[] {
     const events: BreakoutoutoutEvent[] = [];
     this.updatePaddle(delta, input);
+
+    if (this.phase === 'ready') {
+      this.holdBallOnPaddle();
+      this.readyRemaining = Math.max(0, this.readyRemaining - delta * this.gameSpeed);
+      if (this.readyRemaining <= 0) {
+        events.push(...this.launchOrAdvance());
+      }
+      return events;
+    }
 
     if (this.phase !== 'playing') {
       this.holdBallOnPaddle();
@@ -210,6 +225,7 @@ export class BreakoutoutoutInstance {
 
     const angle = -0.38 + Math.random() * 0.76;
     this.phase = 'playing';
+    this.readyRemaining = 0;
     this.ballBody.setLinvel(
       {
         x: Math.sin(angle) * this.launchBallSpeed,
@@ -232,7 +248,7 @@ export class BreakoutoutoutInstance {
 
     this.score = 0;
     this.lives = 3;
-    this.phase = 'ready';
+    this.setReadyPhase();
     this.paddleX = 0;
     this.targetPaddleX = 0;
     this.autoPilotRemaining = 0;
@@ -252,6 +268,7 @@ export class BreakoutoutoutInstance {
       score: this.score,
       lives: this.lives,
       phase: this.phase,
+      readyRemaining: this.readyRemaining,
       paddleX: this.paddleX,
       targetPaddleX: this.targetPaddleX,
       autoPilotRemaining: this.autoPilotRemaining,
@@ -276,6 +293,7 @@ export class BreakoutoutoutInstance {
       score: this.score,
       lives: this.lives,
       phase: this.phase,
+      readyRemaining: this.readyRemaining,
       paddleX: this.paddleX,
       targetPaddleX: this.targetPaddleX,
       autoPilotRemaining: this.autoPilotRemaining,
@@ -503,6 +521,11 @@ export class BreakoutoutoutInstance {
     this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
   }
 
+  private setReadyPhase(): void {
+    this.phase = 'ready';
+    this.readyRemaining = READY_DURATION;
+  }
+
   private resolveCollisions(): BreakoutoutoutEvent[] {
     const events: BreakoutoutoutEvent[] = [];
     const bricksToRemove = new Set<Brick>();
@@ -662,7 +685,7 @@ export class BreakoutoutoutInstance {
 
   private loseLife(): BreakoutoutoutEvent[] {
     if (this.sandbox) {
-      this.phase = 'ready';
+      this.setReadyPhase();
       this.autoPilotRemaining = 0;
       this.holdBallOnPaddle();
       return [
@@ -672,7 +695,12 @@ export class BreakoutoutoutInstance {
     }
 
     this.lives -= 1;
-    this.phase = this.lives > 0 ? 'ready' : 'game-over';
+    if (this.lives > 0) {
+      this.setReadyPhase();
+    } else {
+      this.phase = 'game-over';
+      this.readyRemaining = 0;
+    }
     this.autoPilotRemaining = 0;
     this.holdBallOnPaddle();
     return [

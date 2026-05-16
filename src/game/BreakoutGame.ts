@@ -71,6 +71,8 @@ const TOUCH_SWIPE_MIN_DISTANCE = 44;
 const TOUCH_SWIPE_AXIS_RATIO = 1.15;
 const SELECTED_OPACITY = 1;
 const BACKGROUND_OPACITY = 0.15;
+const INSTANCE_OPACITY_TWEEN_DURATION = 0.45;
+const INSTANCE_OPACITY_EPSILON = 0.001;
 const SOUND_MIN_VOLUME = 0.12;
 const SOUND_ATTENUATION_DISTANCE = PLANE_Z_GAP * 2.2;
 const PADDLE_COLOR = 0xe8f8f6;
@@ -230,6 +232,13 @@ type BallSpeedMultiplierTween = {
   duration: number;
 };
 
+type InstanceOpacityTween = {
+  from: number;
+  to: number;
+  elapsed: number;
+  duration: number;
+};
+
 type PendingSplit = {
   source: BreakoutoutoutInstance;
   snapshot: BreakoutoutoutSnapshot;
@@ -268,6 +277,8 @@ type InstanceView = {
   statusText: HudTextPlane;
   renderState: BreakoutoutoutRenderState;
   appliedOpacity: number;
+  targetOpacity: number;
+  opacityTween?: InstanceOpacityTween;
   zTransition?: PlaneZTransition;
 };
 
@@ -542,7 +553,8 @@ export class BreakoutGame {
       hearts,
       statusText,
       renderState: state,
-      appliedOpacity: Number.NaN
+      appliedOpacity: Number.NaN,
+      targetOpacity: Number.NaN
     };
     group.position.set(0, 0, this.targetPlaneZForTrack(trackIndex));
     this.syncInstanceView(view, state, 0);
@@ -918,6 +930,7 @@ export class BreakoutGame {
     this.stats.begin();
     this.updateGameSpeedTween(delta);
     this.updatePlaneZTransitions(delta);
+    this.updateInstanceOpacityTweens(delta);
     this.updateBallSpeedMultiplierTweens(delta);
     this.updateSplitBloom(delta);
     this.accumulator += delta;
@@ -925,10 +938,6 @@ export class BreakoutGame {
     while (this.accumulator >= FIXED_STEP) {
       for (let index = 0; index < this.instances.length; index += 1) {
         const instance = this.instances[index];
-        if (this.autopilot && !this.splitSequenceActive && instance.isActive()) {
-          this.handleInstanceEvents(instance, instance.launchOrAdvance());
-        }
-
         const input = !this.autopilot && index === this.selectedIndex && instance.isActive()
           ? this.currentInput
           : IDLE_INPUT;
@@ -1054,7 +1063,7 @@ export class BreakoutGame {
       to: targetZ,
       elapsed: 0,
       duration: SPLIT_PLANE_TRAVEL_DURATION,
-      selectOnComplete: false,
+      selectOnComplete: true,
       resumeSplitOnComplete: true
     };
   }
@@ -1372,6 +1381,10 @@ export class BreakoutGame {
   }
 
   private planeStatusLabel(state: BreakoutoutoutRenderState): string {
+    if (state.phase === 'ready') {
+      return `READY ${Math.max(1, Math.ceil(state.readyRemaining))}s`;
+    }
+
     if (state.autoPilotActive) {
       return state.autoPilotRemaining > 0
         ? `autopilot mode ${Math.ceil(state.autoPilotRemaining)}s`
@@ -1570,17 +1583,64 @@ export class BreakoutGame {
 
   private updateInstanceOpacity(): void {
     for (const view of this.views) {
-      this.applyInstanceOpacity(view);
+      this.setInstanceOpacityTarget(view, this.targetOpacityForView(view));
     }
   }
 
-  private applyInstanceOpacity(view: InstanceView): void {
-    const opacity = this.isSelectedView(view) ? SELECTED_OPACITY : BACKGROUND_OPACITY;
-    if (view.appliedOpacity === opacity) {
+  private setInstanceOpacityTarget(view: InstanceView, opacity: number): void {
+    const targetOpacity = clamp(opacity, 0, 1);
+    if (
+      Number.isFinite(view.targetOpacity)
+      && Math.abs(view.targetOpacity - targetOpacity) <= INSTANCE_OPACITY_EPSILON
+    ) {
       return;
     }
 
-    view.appliedOpacity = opacity;
+    const currentOpacity = Number.isFinite(view.appliedOpacity) ? view.appliedOpacity : targetOpacity;
+    view.targetOpacity = targetOpacity;
+    if (Math.abs(currentOpacity - targetOpacity) <= INSTANCE_OPACITY_EPSILON) {
+      view.opacityTween = undefined;
+      this.applyInstanceOpacity(view, targetOpacity);
+      return;
+    }
+
+    view.opacityTween = {
+      from: currentOpacity,
+      to: targetOpacity,
+      elapsed: 0,
+      duration: INSTANCE_OPACITY_TWEEN_DURATION
+    };
+  }
+
+  private updateInstanceOpacityTweens(delta: number): void {
+    for (const view of this.views) {
+      const tween = view.opacityTween;
+      if (!tween) {
+        continue;
+      }
+
+      tween.elapsed += Math.max(delta, 0);
+      const progress = clamp(tween.elapsed / Math.max(tween.duration, 0.001), 0, 1);
+      const opacity = lerp(tween.from, tween.to, easeInOutCubic(progress));
+      this.applyInstanceOpacity(view, opacity);
+
+      if (progress >= 1) {
+        view.opacityTween = undefined;
+        this.applyInstanceOpacity(view, tween.to);
+      }
+    }
+  }
+
+  private applyInstanceOpacity(view: InstanceView, opacity: number): void {
+    const nextOpacity = clamp(opacity, 0, 1);
+    if (
+      Number.isFinite(view.appliedOpacity)
+      && Math.abs(view.appliedOpacity - nextOpacity) <= INSTANCE_OPACITY_EPSILON
+    ) {
+      return;
+    }
+
+    view.appliedOpacity = nextOpacity;
     view.group.traverse((object) => {
       if (object instanceof THREE.Mesh) {
         this.applyMeshOpacity(view, object);
@@ -1593,8 +1653,12 @@ export class BreakoutGame {
       return;
     }
 
-    const opacity = this.isSelectedView(view) ? SELECTED_OPACITY : BACKGROUND_OPACITY;
+    const opacity = Number.isFinite(view.appliedOpacity) ? view.appliedOpacity : this.targetOpacityForView(view);
     setMaterialOpacity(mesh.material, opacity);
+  }
+
+  private targetOpacityForView(view: InstanceView): number {
+    return this.isSelectedView(view) ? SELECTED_OPACITY : BACKGROUND_OPACITY;
   }
 
   private updateCameraPlaneTransition(delta: number): number {
