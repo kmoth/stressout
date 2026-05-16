@@ -24,8 +24,9 @@ const searchParams = new URLSearchParams(window.location.search);
 const autopilot = parseBooleanParam(searchParams, 'autopilot');
 const sandbox = parseBooleanParam(searchParams, 'sandbox') || parseBooleanParam(searchParams, 'sandboxMode');
 const specialBrickKinds = parseSpecialBrickKinds(searchParams);
+const initialInstanceCount = parseIntegerParam(searchParams, ['instances', 'instanceCount', 'initialInstances']);
 
-BreakoutGame.create(root, { autopilot, sandbox, specialBrickKinds }).catch((error: unknown) => {
+BreakoutGame.create(root, { autopilot, sandbox, specialBrickKinds, initialInstanceCount }).catch((error: unknown) => {
   console.error(error);
   root.innerHTML = `
     <main class="boot-error">
@@ -46,6 +47,22 @@ function parseBooleanParam(params: URLSearchParams, key: string): boolean {
   }
 
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+function parseIntegerParam(params: URLSearchParams, keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = params.get(key);
+    if (value === null) {
+      continue;
+    }
+
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return undefined;
 }
 
 function parseSpecialBrickKinds(params: URLSearchParams): readonly SpecialBrickKind[] | undefined {
