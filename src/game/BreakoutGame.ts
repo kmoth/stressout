@@ -78,12 +78,13 @@ const GAME_OVER_CAMERA_TRACK_Y = 0.64;
 const GAME_OVER_CAMERA_PAN_REMAINING_PER_SECOND = 0.08;
 const GAME_OVER_CAMERA_ZOOM_REMAINING_PER_SECOND = 0.12;
 const GAME_OVER_CAMERA_SHAKE_RAMP_DURATION = 0.82;
-const GAME_OVER_CAMERA_SHAKE_X = 0.075;
-const GAME_OVER_CAMERA_SHAKE_Y = 0.052;
-const GAME_OVER_CAMERA_SHAKE_ROLL = 0.0045;
+const GAME_OVER_CAMERA_SHAKE_X = 0.1;
+const GAME_OVER_CAMERA_SHAKE_Y = 0.1;
+const GAME_OVER_CAMERA_SHAKE_ROLL = 0.000;
 const TOUCH_SWIPE_MIN_DISTANCE = 44;
 const TOUCH_SWIPE_AXIS_RATIO = 1.15;
 const SELECTED_OPACITY = 1;
+const SLOT_A_OPACITY = 0.08;
 const BACKGROUND_OPACITY = 0.15;
 const INSTANCE_OPACITY_TWEEN_DURATION = 0.45;
 const INSTANCE_OPACITY_EPSILON = 0.001;
@@ -1047,9 +1048,14 @@ export class BreakoutGame {
     this.accumulator += delta;
 
     while (this.accumulator >= FIXED_STEP) {
-      const allowPaddleInput = !this.totalGameOver && !this.isFatalMissSequenceActive();
       for (let index = 0; index < this.instances.length; index += 1) {
         const instance = this.instances[index];
+        const fatalSequenceInstance = this.isFatalMissSequenceActive() ? this.fatalMissInstance : null;
+        if (fatalSequenceInstance && instance !== fatalSequenceInstance) {
+          continue;
+        }
+
+        const allowPaddleInput = !this.totalGameOver && !fatalSequenceInstance;
         const input = allowPaddleInput && !this.autopilot && index === this.selectedIndex && instance.isActive()
           ? this.currentInput
           : IDLE_INPUT;
@@ -1168,6 +1174,10 @@ export class BreakoutGame {
     }
 
     if (instance.getRenderState().phase === 'game-over') {
+      if (this.isFatalMissSequenceActive() && instance !== this.fatalMissInstance) {
+        return;
+      }
+
       this.triggerTotalGameOver(instance);
       return;
     }
@@ -1417,14 +1427,25 @@ export class BreakoutGame {
   }
 
   private syncBallSpeedForAll(): void {
-    if (this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (this.totalGameOver) {
       for (const instance of this.instances) {
-        this.setBallSpeedMultiplierTarget(
-          instance,
-          FATAL_MISS_BALL_SPEED_MULTIPLIER,
-          true,
-          FATAL_MISS_BALL_SPEED_TWEEN_DURATION
-        );
+        this.setBallSpeedMultiplierTarget(instance, 0, false);
+      }
+      return;
+    }
+
+    if (this.isFatalMissSequenceActive()) {
+      for (const instance of this.instances) {
+        if (instance === this.fatalMissInstance) {
+          this.setBallSpeedMultiplierTarget(
+            instance,
+            FATAL_MISS_BALL_SPEED_MULTIPLIER,
+            true,
+            FATAL_MISS_BALL_SPEED_TWEEN_DURATION
+          );
+        } else {
+          this.setBallSpeedMultiplierTarget(instance, 0, false);
+        }
       }
       return;
     }
@@ -2078,7 +2099,11 @@ export class BreakoutGame {
   }
 
   private targetOpacityForView(view: InstanceView): number {
-    return this.isSelectedView(view) ? SELECTED_OPACITY : BACKGROUND_OPACITY;
+    if (this.isSelectedView(view)) {
+      return SELECTED_OPACITY;
+    }
+
+    return this.isSlotAView(view) ? SLOT_A_OPACITY : BACKGROUND_OPACITY;
   }
 
   private updateCameraPlaneTransition(delta: number): number {
@@ -2303,6 +2328,10 @@ export class BreakoutGame {
 
   private isSelectedView(view: InstanceView): boolean {
     return view.instance === this.selectedInstance && view.trackIndex === this.selectedTrackIndex;
+  }
+
+  private isSlotAView(view: InstanceView): boolean {
+    return view.trackIndex === this.selectedTrackIndex - 1;
   }
 
   private viewForInstanceAtTrack(
