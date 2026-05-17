@@ -1,6 +1,16 @@
 import { Howl } from 'howler';
 
-export type ToneName = 'launch' | 'paddle' | 'brick' | 'wall' | 'life' | 'clear' | 'split' | 'auto' | 'extraLife';
+export type ToneName =
+  | 'launch'
+  | 'paddle'
+  | 'brick'
+  | 'wall'
+  | 'life'
+  | 'clear'
+  | 'split'
+  | 'auto'
+  | 'extraLife'
+  | 'projector';
 
 type ToneOptions = {
   frequency: number;
@@ -22,7 +32,8 @@ export class SoundBank {
       clear: this.makeTone({ frequency: 880, duration: 0.28, volume: 0.24 }),
       split: this.makeTone({ frequency: 1040, duration: 0.36, volume: 0.24, wave: 'triangle' }),
       auto: this.makeTone({ frequency: 540, duration: 0.34, volume: 0.23, wave: 'sine' }),
-      extraLife: this.makeTone({ frequency: 760, duration: 0.3, volume: 0.24, wave: 'triangle' })
+      extraLife: this.makeTone({ frequency: 760, duration: 0.3, volume: 0.24, wave: 'triangle' }),
+      projector: this.makeTone({ frequency: 1180, duration: 0.32, volume: 0.22, wave: 'sine' })
     };
   }
 

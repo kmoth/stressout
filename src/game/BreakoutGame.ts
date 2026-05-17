@@ -95,6 +95,16 @@ const PADDLE_EMISSIVE = 0x1fbfb1;
 const PADDLE_AUTOPILOT_COLOR = 0xeafffb;
 const PADDLE_AUTOPILOT_EMISSIVE = 0x34d399;
 const PADDLE_BASE_EMISSIVE_INTENSITY = 0.28;
+const TRAJECTORY_PROJECTION_COLOR = 0x7dd3fc;
+const TRAJECTORY_PROJECTION_DOT_RADIUS = 0.048;
+const TRAJECTORY_PROJECTION_DOT_SPACING = 0.34;
+const TRAJECTORY_PROJECTION_MARCH_SPEED = 1.7;
+const TRAJECTORY_PROJECTION_RENDER_ORDER = 24;
+const TRAJECTORY_PROJECTION_Z = 0.33;
+const TRAJECTORY_PROJECTION_MAX_DOTS = 320;
+const TRAJECTORY_PROJECTION_MAX_BOUNCES = 52;
+const TRAJECTORY_PROJECTION_MAX_DISTANCE = 260;
+const TRAJECTORY_PROJECTION_EPSILON = 0.0001;
 const HUD_TEXTURE_SCALE = 2;
 const HUD_FONT_FAMILY = 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 const PLANE_HUD_RENDER_ORDER = 80;
@@ -134,16 +144,16 @@ const IDLE_INPUT: BreakoutInput = { left: false, right: false };
 //   affineDistortion: 0
 // };
 const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
-  pixelSize: 5,
-  colorLevels: 26,
-  scanlineStrength: 0.23,
-  scanlineDensity: 0.45,
-  scanlineSpeed: 1.75,
-  vignetteStrength: 0.83,
-  vignetteSmoothness: 0.52,
-  colorBleeding: 0.00685,
-  barrelCurvature: 0.024,
-  affineDistortion: 0.2
+  pixelSize: 3,
+  colorLevels: 32,
+  scanlineStrength: 0.6,
+  scanlineDensity: 0.9,
+  scanlineSpeed: -0.85,
+  vignetteStrength: 0.2,
+  vignetteSmoothness: 0.35,
+  colorBleeding: 0.0016,
+  barrelCurvature: 0.036,
+  affineDistortion: 0.28
 };
 const POST_PROCESSING_CONTROLS: readonly PostProcessingControlDefinition[] = [
   { key: 'pixelSize', label: 'Pixel size', min: 1, max: 8, step: 1, decimals: 0 },
@@ -277,6 +287,32 @@ type SplitGlowMesh = {
   pulseScale: number;
 };
 
+type TrajectoryPoint = {
+  x: number;
+  y: number;
+};
+
+type TrajectoryObstacle = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type TrajectoryHit = {
+  distance: number;
+  normalX: number;
+  normalY: number;
+  brickIndex?: number;
+};
+
+type TrajectorySegment = {
+  start: TrajectoryPoint;
+  end: TrajectoryPoint;
+  length: number;
+  distanceStart: number;
+};
+
 type DesiredPlaneView = {
   instance: BreakoutoutoutInstance;
   trackIndex: number;
@@ -293,6 +329,7 @@ type InstanceView = {
   trackIndex: number;
   paddleMesh: THREE.Mesh;
   ballMesh: THREE.Mesh;
+  trajectoryProjection: TrajectoryProjection;
   wallMeshes: THREE.Mesh[];
   bricks: Map<string, THREE.Mesh>;
   activeBrickIds: Set<string>;
@@ -565,6 +602,7 @@ export class BreakoutGame {
     const group = new THREE.Group();
     const paddleMesh = this.createPaddleMesh();
     const ballMesh = this.createBallMesh();
+    const trajectoryProjection = new TrajectoryProjection();
     const scoreText = this.createPlaneScoreText();
     const hearts = new HudHeartsPlane({ renderOrder: PLANE_HUD_RENDER_ORDER });
     const statusText = this.createPlaneStatusText();
@@ -576,7 +614,7 @@ export class BreakoutGame {
     const wallMeshes = this.createWalls(group, splitGlowMeshes);
     splitGlowMeshes.push(this.attachSplitGlow(paddleMesh, PADDLE_EMISSIVE, { baseScale: 1.18, pulseScale: 0.42 }));
     splitGlowMeshes.push(this.attachSplitGlow(ballMesh, 0xffe5a8, { baseScale: 1.75, pulseScale: 0.86 }));
-    group.add(paddleMesh, ballMesh, scoreText.mesh, hearts.mesh, statusText.mesh, restartButtonText.mesh);
+    group.add(trajectoryProjection.mesh, paddleMesh, ballMesh, scoreText.mesh, hearts.mesh, statusText.mesh, restartButtonText.mesh);
 
     const view: InstanceView = {
       instance,
@@ -584,6 +622,7 @@ export class BreakoutGame {
       trackIndex,
       paddleMesh,
       ballMesh,
+      trajectoryProjection,
       wallMeshes,
       bricks,
       activeBrickIds,
@@ -739,12 +778,13 @@ export class BreakoutGame {
     const isSplitter = brick.kind === 'splitter';
     const isAutopilot = brick.kind === 'autopilot';
     const isLife = brick.kind === 'life';
+    const isProjector = brick.kind === 'projector';
     const material = makeFadeableMaterial(new THREE.MeshStandardMaterial({
       color: brick.color,
       emissive: brick.color,
-      emissiveIntensity: isSplitter ? 0.7 : isAutopilot ? 0.62 : isLife ? 0.66 : 0.18 + brick.row * 0.018,
-      roughness: isSplitter ? 0.24 : isAutopilot ? 0.3 : isLife ? 0.28 : 0.46,
-      metalness: isSplitter ? 0.34 : isAutopilot ? 0.22 : isLife ? 0.24 : 0.12
+      emissiveIntensity: isSplitter ? 0.7 : isAutopilot ? 0.62 : isLife ? 0.66 : isProjector ? 0.72 : 0.18 + brick.row * 0.018,
+      roughness: isSplitter ? 0.24 : isAutopilot ? 0.3 : isLife ? 0.28 : isProjector ? 0.22 : 0.46,
+      metalness: isSplitter ? 0.34 : isAutopilot ? 0.22 : isLife ? 0.24 : isProjector ? 0.28 : 0.12
     }));
     return new THREE.Mesh(new THREE.BoxGeometry(brick.width, brick.height, RENDER_MESH_DEPTHS.playfield), material);
   }
@@ -1542,6 +1582,12 @@ export class BreakoutGame {
     view.ballMesh.rotation.x += 0.05 * this.gameSpeed;
     view.ballMesh.rotation.y += 0.075 * this.gameSpeed;
     view.group.rotation.x = Math.sin(time * 0.32 + state.id * 0.2) * 0.018;
+    view.trajectoryProjection.update(
+      !terminal && state.phase === 'playing' && state.pathProjectionActive
+        ? createTrajectoryProjectionPath(state)
+        : [],
+      time
+    );
     this.updatePlaneCornerHud(view, state);
     this.updatePlaneStatusHud(view, state);
 
@@ -1568,8 +1614,8 @@ export class BreakoutGame {
         mesh = this.createBrickMesh(brick);
         view.bricks.set(brick.id, mesh);
         view.splitGlowMeshes.push(this.attachSplitGlow(mesh, brick.color, {
-          baseScale: brick.kind === 'splitter' ? 1.18 : 1.12,
-          pulseScale: brick.kind === 'splitter' ? 0.62 : 0.38
+          baseScale: brick.kind === 'splitter' || brick.kind === 'projector' ? 1.18 : 1.12,
+          pulseScale: brick.kind === 'splitter' || brick.kind === 'projector' ? 0.62 : 0.38
         }));
         view.group.add(mesh);
         this.applyMeshOpacity(view, mesh);
@@ -1644,6 +1690,10 @@ export class BreakoutGame {
   private planeStatusLabel(state: BreakoutoutoutRenderState): string {
     if (state.phase === 'ready') {
       return `READY ${Math.max(1, Math.ceil(state.readyRemaining))}s`;
+    }
+
+    if (state.pathProjectionActive) {
+      return `PATH ${Math.ceil(state.pathProjectionRemaining)}s`;
     }
 
     if (state.autoPilotActive) {
@@ -2405,6 +2455,318 @@ export class BreakoutGame {
 //   texture.needsUpdate = true;
 //   return texture;
 // }
+
+class TrajectoryProjection {
+  readonly mesh: THREE.InstancedMesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
+
+  private readonly matrix = new THREE.Matrix4();
+  private readonly position = new THREE.Vector3();
+  private readonly rotation = new THREE.Quaternion();
+  private readonly scale = new THREE.Vector3(1, 1, 1);
+
+  constructor() {
+    const geometry = new THREE.CircleGeometry(TRAJECTORY_PROJECTION_DOT_RADIUS, 14);
+    const material = makeFadeableMaterial(new THREE.MeshBasicMaterial({
+      color: TRAJECTORY_PROJECTION_COLOR,
+      transparent: true,
+      opacity: 0.86,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false
+    }));
+    this.mesh = new THREE.InstancedMesh(geometry, material, TRAJECTORY_PROJECTION_MAX_DOTS);
+    this.mesh.count = 0;
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = TRAJECTORY_PROJECTION_RENDER_ORDER;
+    this.mesh.visible = false;
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  }
+
+  update(points: readonly TrajectoryPoint[], time: number): void {
+    const segments = createTrajectorySegments(points);
+    const lastSegment = segments[segments.length - 1];
+    const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
+
+    if (totalLength <= TRAJECTORY_PROJECTION_EPSILON) {
+      this.mesh.count = 0;
+      this.mesh.visible = false;
+      return;
+    }
+
+    let dotIndex = 0;
+    let distance = positiveModulo(time * TRAJECTORY_PROJECTION_MARCH_SPEED, TRAJECTORY_PROJECTION_DOT_SPACING);
+
+    while (distance <= totalLength && dotIndex < TRAJECTORY_PROJECTION_MAX_DOTS) {
+      const point = sampleTrajectorySegments(segments, distance);
+      const pulse = 0.88 + 0.16 * Math.sin(distance * 9 - time * 18);
+      this.position.set(point.x, point.y, TRAJECTORY_PROJECTION_Z);
+      this.scale.setScalar(pulse);
+      this.matrix.compose(this.position, this.rotation, this.scale);
+      this.mesh.setMatrixAt(dotIndex, this.matrix);
+
+      dotIndex += 1;
+      distance += TRAJECTORY_PROJECTION_DOT_SPACING;
+    }
+
+    this.mesh.count = dotIndex;
+    this.mesh.visible = dotIndex > 0;
+    this.mesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+function createTrajectoryProjectionPath(state: BreakoutoutoutRenderState): TrajectoryPoint[] {
+  const speed = Math.hypot(state.ball.vx, state.ball.vy);
+  if (speed <= TRAJECTORY_PROJECTION_EPSILON) {
+    return [];
+  }
+
+  let x = state.ball.x;
+  let y = state.ball.y;
+  let directionX = state.ball.vx / speed;
+  let directionY = state.ball.vy / speed;
+  let traveled = 0;
+  const points: TrajectoryPoint[] = [{ x, y }];
+  const obstacles: TrajectoryObstacle[] = state.bricks
+    .filter((brick) => !brick.hit)
+    .map((brick) => ({
+      x: brick.x,
+      y: brick.y,
+      width: brick.width,
+      height: brick.height
+    }));
+
+  for (let bounce = 0; bounce < TRAJECTORY_PROJECTION_MAX_BOUNCES; bounce += 1) {
+    const paddleDistance = distanceToPaddleY(y, directionY);
+    const hit = nearestTrajectoryHit(x, y, directionX, directionY, obstacles);
+
+    if (
+      paddleDistance !== null
+      && paddleDistance <= (hit?.distance ?? Number.POSITIVE_INFINITY)
+      && traveled + paddleDistance <= TRAJECTORY_PROJECTION_MAX_DISTANCE
+    ) {
+      points.push({
+        x: x + directionX * paddleDistance,
+        y: PADDLE_Y
+      });
+      return points;
+    }
+
+    if (!hit) {
+      return points.length > 1 ? points : [];
+    }
+
+    const remainingDistance = TRAJECTORY_PROJECTION_MAX_DISTANCE - traveled;
+    const segmentDistance = Math.min(hit.distance, remainingDistance);
+    if (segmentDistance <= TRAJECTORY_PROJECTION_EPSILON) {
+      return points.length > 1 ? points : [];
+    }
+
+    const nextPoint = {
+      x: x + directionX * segmentDistance,
+      y: y + directionY * segmentDistance
+    };
+    points.push(nextPoint);
+    traveled += segmentDistance;
+
+    if (segmentDistance < hit.distance || traveled >= TRAJECTORY_PROJECTION_MAX_DISTANCE) {
+      return points;
+    }
+
+    if (typeof hit.brickIndex === 'number') {
+      obstacles.splice(hit.brickIndex, 1);
+    }
+
+    if (hit.normalX !== 0) {
+      directionX *= -1;
+    }
+    if (hit.normalY !== 0) {
+      directionY *= -1;
+    }
+
+    x = nextPoint.x + hit.normalX * TRAJECTORY_PROJECTION_EPSILON * 4;
+    y = nextPoint.y + hit.normalY * TRAJECTORY_PROJECTION_EPSILON * 4;
+  }
+
+  return points.length > 1 ? points : [];
+}
+
+function distanceToPaddleY(y: number, directionY: number): number | null {
+  if (directionY >= -TRAJECTORY_PROJECTION_EPSILON) {
+    return null;
+  }
+
+  const distance = (PADDLE_Y - y) / directionY;
+  return distance > TRAJECTORY_PROJECTION_EPSILON ? distance : null;
+}
+
+function nearestTrajectoryHit(
+  x: number,
+  y: number,
+  directionX: number,
+  directionY: number,
+  obstacles: readonly TrajectoryObstacle[]
+): TrajectoryHit | null {
+  let nearest = wallTrajectoryHit(x, y, directionX, directionY);
+
+  for (let index = 0; index < obstacles.length; index += 1) {
+    const hit = rayAabbTrajectoryHit(x, y, directionX, directionY, obstacles[index]);
+    if (!hit || (nearest && hit.distance >= nearest.distance)) {
+      continue;
+    }
+
+    nearest = {
+      ...hit,
+      brickIndex: index
+    };
+  }
+
+  return nearest;
+}
+
+function wallTrajectoryHit(x: number, y: number, directionX: number, directionY: number): TrajectoryHit | null {
+  let nearest: TrajectoryHit | null = null;
+  const left = -HALF_WIDTH + BALL_RADIUS;
+  const right = HALF_WIDTH - BALL_RADIUS;
+  const top = HALF_HEIGHT - BALL_RADIUS;
+
+  if (directionX < -TRAJECTORY_PROJECTION_EPSILON) {
+    nearest = nearerTrajectoryHit(nearest, {
+      distance: (left - x) / directionX,
+      normalX: 1,
+      normalY: 0
+    });
+  } else if (directionX > TRAJECTORY_PROJECTION_EPSILON) {
+    nearest = nearerTrajectoryHit(nearest, {
+      distance: (right - x) / directionX,
+      normalX: -1,
+      normalY: 0
+    });
+  }
+
+  if (directionY > TRAJECTORY_PROJECTION_EPSILON) {
+    nearest = nearerTrajectoryHit(nearest, {
+      distance: (top - y) / directionY,
+      normalX: 0,
+      normalY: -1
+    });
+  }
+
+  return nearest;
+}
+
+function nearerTrajectoryHit(current: TrajectoryHit | null, candidate: TrajectoryHit): TrajectoryHit | null {
+  if (candidate.distance <= TRAJECTORY_PROJECTION_EPSILON) {
+    return current;
+  }
+
+  if (!current || candidate.distance < current.distance) {
+    return candidate;
+  }
+
+  return current;
+}
+
+function rayAabbTrajectoryHit(
+  x: number,
+  y: number,
+  directionX: number,
+  directionY: number,
+  obstacle: TrajectoryObstacle
+): TrajectoryHit | null {
+  const minX = obstacle.x - obstacle.width / 2 - BALL_RADIUS;
+  const maxX = obstacle.x + obstacle.width / 2 + BALL_RADIUS;
+  const minY = obstacle.y - obstacle.height / 2 - BALL_RADIUS;
+  const maxY = obstacle.y + obstacle.height / 2 + BALL_RADIUS;
+  let entryDistance = Number.NEGATIVE_INFINITY;
+  let exitDistance = Number.POSITIVE_INFINITY;
+  let normalX = 0;
+  let normalY = 0;
+
+  if (Math.abs(directionX) <= TRAJECTORY_PROJECTION_EPSILON) {
+    if (x < minX || x > maxX) {
+      return null;
+    }
+  } else {
+    const nearX = (minX - x) / directionX;
+    const farX = (maxX - x) / directionX;
+    const xEntry = Math.min(nearX, farX);
+    const xExit = Math.max(nearX, farX);
+    if (xEntry > entryDistance) {
+      entryDistance = xEntry;
+      normalX = nearX > farX ? 1 : -1;
+      normalY = 0;
+    }
+    exitDistance = Math.min(exitDistance, xExit);
+  }
+
+  if (Math.abs(directionY) <= TRAJECTORY_PROJECTION_EPSILON) {
+    if (y < minY || y > maxY) {
+      return null;
+    }
+  } else {
+    const nearY = (minY - y) / directionY;
+    const farY = (maxY - y) / directionY;
+    const yEntry = Math.min(nearY, farY);
+    const yExit = Math.max(nearY, farY);
+    if (yEntry > entryDistance) {
+      entryDistance = yEntry;
+      normalX = 0;
+      normalY = nearY > farY ? 1 : -1;
+    }
+    exitDistance = Math.min(exitDistance, yExit);
+  }
+
+  if (entryDistance > exitDistance || exitDistance <= TRAJECTORY_PROJECTION_EPSILON) {
+    return null;
+  }
+
+  if (entryDistance <= TRAJECTORY_PROJECTION_EPSILON) {
+    return null;
+  }
+
+  return {
+    distance: entryDistance,
+    normalX,
+    normalY
+  };
+}
+
+function createTrajectorySegments(points: readonly TrajectoryPoint[]): TrajectorySegment[] {
+  const segments: TrajectorySegment[] = [];
+  let distanceStart = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1];
+    const end = points[index];
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    if (length <= TRAJECTORY_PROJECTION_EPSILON) {
+      continue;
+    }
+
+    segments.push({ start, end, length, distanceStart });
+    distanceStart += length;
+  }
+
+  return segments;
+}
+
+function sampleTrajectorySegments(segments: readonly TrajectorySegment[], distance: number): TrajectoryPoint {
+  for (const segment of segments) {
+    if (distance > segment.distanceStart + segment.length) {
+      continue;
+    }
+
+    const amount = clamp((distance - segment.distanceStart) / segment.length, 0, 1);
+    return {
+      x: lerp(segment.start.x, segment.end.x, amount),
+      y: lerp(segment.start.y, segment.end.y, amount)
+    };
+  }
+
+  const fallback = segments[segments.length - 1]?.end;
+  return fallback ? { ...fallback } : { x: 0, y: 0 };
+}
 
 type PostProcessingPanelOptions = {
   settings: PostProcessingSettings;

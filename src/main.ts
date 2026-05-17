@@ -11,7 +11,11 @@ const SPECIAL_BRICK_KIND_ALIASES: Readonly<Record<string, SpecialBrickKind>> = {
   life: 'life',
   lives: 'life',
   extralife: 'life',
-  'extra-life': 'life'
+  'extra-life': 'life',
+  projector: 'projector',
+  projection: 'projector',
+  predictor: 'projector',
+  path: 'projector'
 };
 
 const root = document.querySelector<HTMLDivElement>('#app');

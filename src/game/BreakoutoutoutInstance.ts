@@ -28,10 +28,14 @@ const AUTOPILOT_ROW = BRICK_ROWS - 3;
 const AUTOPILOT_COL = Math.max(1, Math.floor(BRICK_COLS / 2) - 2);
 const LIFE_ROW = BRICK_ROWS - 3;
 const LIFE_COL = Math.min(BRICK_COLS - 2, Math.floor(BRICK_COLS / 2) + 2);
+const PROJECTOR_ROW = BRICK_ROWS - 4;
+const PROJECTOR_COL = Math.floor(BRICK_COLS / 2);
 const SPLITTER_COLOR = 0xd946ef;
 const AUTOPILOT_COLOR = 0x34d399;
 const LIFE_COLOR = 0xfb7185;
+const PROJECTOR_COLOR = 0x38bdf8;
 const AUTOPILOT_DURATION = 10;
+const PATH_PROJECTION_DURATION = 12;
 const AUTOPILOT_BOUNCE_OFFSET_MIN = 0.08;
 const AUTOPILOT_BOUNCE_OFFSET_RANGE = 0.16;
 const SPLIT_BONUS_MIN_Y = -2.1;
@@ -39,12 +43,14 @@ const SPLIT_BONUS_MAX_Y = BRICK_TOP_Y + 0.1;
 const SPLITTER_BALL_SAFE_SECONDS = 0.42;
 const SPLITTER_BALL_SAFE_PADDING = 0.72;
 const MIN_MOVING_BALL_SPEED = 0.0001;
+const MIN_BALL_VERTICAL_DIRECTION = 0.18;
+const MAX_BALL_SPEED_FACTOR = 1.25;
 const READY_DURATION = 5;
 const FATAL_MISS_Y = PADDLE_Y - PADDLE_HEIGHT / 2 - BALL_RADIUS;
 
 export type Phase = 'ready' | 'playing' | 'cleared' | 'game-over';
-export type BrickKind = 'normal' | 'splitter' | 'autopilot' | 'life';
-export const SPECIAL_BRICK_KINDS = ['splitter', 'autopilot', 'life'] as const;
+export type BrickKind = 'normal' | 'splitter' | 'autopilot' | 'life' | 'projector';
+export const SPECIAL_BRICK_KINDS = ['splitter', 'autopilot', 'life', 'projector'] as const;
 export type SpecialBrickKind = typeof SPECIAL_BRICK_KINDS[number];
 
 export type BreakoutInput = {
@@ -83,6 +89,8 @@ export type BreakoutoutoutSnapshot = {
   targetPaddleX: number;
   autoPilotRemaining: number;
   autoPilotActive: boolean;
+  pathProjectionRemaining: number;
+  pathProjectionActive: boolean;
   ballSpeedMultiplier: number;
   ball: {
     x: number;
@@ -161,6 +169,7 @@ export class BreakoutoutoutInstance {
   private paddleX = 0;
   private targetPaddleX = 0;
   private autoPilotRemaining = 0;
+  private pathProjectionRemaining = 0;
   private ballSpeedMultiplier = 1;
   private gameSpeed = 1;
   private lastBallDirectionX = 0;
@@ -188,6 +197,7 @@ export class BreakoutoutoutInstance {
       this.paddleX = snapshot.paddleX;
       this.targetPaddleX = snapshot.targetPaddleX;
       this.autoPilotRemaining = snapshot.autoPilotRemaining ?? 0;
+      this.pathProjectionRemaining = snapshot.pathProjectionRemaining ?? 0;
       this.ballSpeedMultiplier = snapshot.ballSpeedMultiplier ?? 1;
     }
 
@@ -224,6 +234,7 @@ export class BreakoutoutoutInstance {
     if (!this.persistentAutopilot) {
       this.autoPilotRemaining = Math.max(0, this.autoPilotRemaining - delta * this.gameSpeed);
     }
+    this.pathProjectionRemaining = Math.max(0, this.pathProjectionRemaining - delta * this.gameSpeed);
     events.push(...this.resolveCollisions());
     if (this.phase === 'playing') {
       events.push(...this.updateFatalMissPending());
@@ -268,6 +279,7 @@ export class BreakoutoutoutInstance {
     this.paddleX = 0;
     this.targetPaddleX = 0;
     this.autoPilotRemaining = 0;
+    this.pathProjectionRemaining = 0;
     this.paddleBody.setNextKinematicTranslation({ x: 0, y: PADDLE_Y, z: 0 });
     this.paddleBody.setTranslation({ x: 0, y: PADDLE_Y, z: 0 }, true);
     this.clearRemainingBricks();
@@ -290,6 +302,8 @@ export class BreakoutoutoutInstance {
       targetPaddleX: this.targetPaddleX,
       autoPilotRemaining: this.autoPilotRemaining,
       autoPilotActive: this.isAutopilotActive,
+      pathProjectionRemaining: this.pathProjectionRemaining,
+      pathProjectionActive: this.isPathProjectionActive,
       ballSpeedMultiplier: this.ballSpeedMultiplier,
       ball: {
         x: ballPosition.x,
@@ -316,6 +330,8 @@ export class BreakoutoutoutInstance {
       targetPaddleX: this.targetPaddleX,
       autoPilotRemaining: this.autoPilotRemaining,
       autoPilotActive: this.isAutopilotActive,
+      pathProjectionRemaining: this.pathProjectionRemaining,
+      pathProjectionActive: this.isPathProjectionActive,
       ballSpeedMultiplier: this.ballSpeedMultiplier,
       ball: {
         x: ballPosition.x,
@@ -335,7 +351,7 @@ export class BreakoutoutoutInstance {
     const speed = Math.hypot(velocity.x, velocity.y);
 
     if (speed > MIN_MOVING_BALL_SPEED) {
-      this.ballBody.setLinvel({ x: velocity.x * factor, y: velocity.y * factor, z: 0 }, true);
+      this.ballBody.setLinvel(this.capBallVelocity({ x: velocity.x * factor, y: velocity.y * factor }), true);
     } else if (this.phase === 'playing' && this.gameSpeed > 0) {
       this.restoreBallVelocityFromDirection();
     }
@@ -369,7 +385,7 @@ export class BreakoutoutoutInstance {
 
     if (currentSpeed > MIN_MOVING_BALL_SPEED && previousSpeed > MIN_MOVING_BALL_SPEED) {
       const factor = nextSpeed / previousSpeed;
-      this.ballBody.setLinvel({ x: velocity.x * factor, y: velocity.y * factor, z: 0 }, true);
+      this.ballBody.setLinvel(this.capBallVelocity({ x: velocity.x * factor, y: velocity.y * factor }), true);
       return;
     }
 
@@ -394,6 +410,7 @@ export class BreakoutoutoutInstance {
     this.lives = 0;
     this.fatalMissPending = false;
     this.autoPilotRemaining = 0;
+    this.pathProjectionRemaining = 0;
     this.holdBallOnPaddle();
     return [{ type: 'state-changed' }];
   }
@@ -637,7 +654,7 @@ export class BreakoutoutoutInstance {
     const ballPosition = this.ballBody.translation();
     const centeredOffset = (ballPosition.x - this.paddleX) / (PADDLE_WIDTH / 2);
     const offset = this.paddleBounceOffset(centeredOffset);
-    const speed = Math.max(this.paddleBounceBallSpeed, this.currentBallSpeed);
+    const speed = this.capBallSpeed(Math.max(this.paddleBounceBallSpeed, this.currentBallSpeed));
     const angle = offset * 1.04;
     this.ballBody.setLinvel({ x: Math.sin(angle) * speed, y: Math.cos(angle) * speed, z: 0 }, true);
     this.ballBody.setTranslation({ x: ballPosition.x, y: Math.max(ballPosition.y, PADDLE_Y + 0.52), z: 0 }, true);
@@ -681,10 +698,15 @@ export class BreakoutoutoutInstance {
       this.lives += 1;
     }
 
+    if (brick.kind === 'projector') {
+      this.pathProjectionRemaining = PATH_PROJECTION_DURATION;
+    }
+
     if (this.hasClearedRequiredBricks()) {
       this.clearOptionalSplitterBricks();
       this.phase = 'cleared';
       this.autoPilotRemaining = 0;
+      this.pathProjectionRemaining = 0;
       events.push({ type: 'sound', name: 'clear' });
     }
 
@@ -719,7 +741,7 @@ export class BreakoutoutoutInstance {
   private keepBallPlanar(): void {
     const position = this.ballBody.translation();
     const velocity = this.ballBody.linvel();
-    const speed = Math.max(this.currentBallSpeed, this.minimumBallSpeed);
+    const speed = this.capBallSpeed(Math.max(this.currentBallSpeed, this.minimumBallSpeed));
 
     if (speed <= MIN_MOVING_BALL_SPEED) {
       this.ballBody.setTranslation({ x: position.x, y: position.y, z: 0 }, true);
@@ -728,8 +750,13 @@ export class BreakoutoutoutInstance {
     }
 
     const planarSpeed = Math.hypot(velocity.x, velocity.y) || speed;
-    const normalizedX = velocity.x / planarSpeed;
-    const normalizedY = velocity.y / planarSpeed;
+    let normalizedX = velocity.x / planarSpeed;
+    let normalizedY = velocity.y / planarSpeed;
+    if (Math.abs(normalizedY) < MIN_BALL_VERTICAL_DIRECTION) {
+      normalizedY = Math.sign(normalizedY || 1) * MIN_BALL_VERTICAL_DIRECTION;
+      normalizedX = Math.sign(normalizedX || this.lastBallDirectionX || 1)
+        * Math.sqrt(1 - normalizedY * normalizedY);
+    }
     this.lastBallDirectionX = normalizedX;
     this.lastBallDirectionY = normalizedY;
 
@@ -737,7 +764,7 @@ export class BreakoutoutoutInstance {
     this.ballBody.setLinvel(
       {
         x: normalizedX * speed,
-        y: Math.abs(normalizedY) < 0.18 ? Math.sign(normalizedY || 1) * speed * 0.18 : normalizedY * speed,
+        y: normalizedY * speed,
         z: 0
       },
       true
@@ -804,6 +831,10 @@ export class BreakoutoutoutInstance {
     return BALL_SPEED * this.ballSpeedMultiplier * this.gameSpeed;
   }
 
+  private get maximumBallSpeed(): number {
+    return this.minimumBallSpeed * MAX_BALL_SPEED_FACTOR;
+  }
+
   private get paddleBounceBallSpeed(): number {
     return BALL_SPEED * this.ballSpeedMultiplier * this.gameSpeed;
   }
@@ -812,6 +843,12 @@ export class BreakoutoutoutInstance {
     return this.phase !== 'game-over'
       && this.phase !== 'cleared'
       && (this.persistentAutopilot || this.autoPilotRemaining > 0);
+  }
+
+  private get isPathProjectionActive(): boolean {
+    return this.phase !== 'game-over'
+      && this.phase !== 'cleared'
+      && this.pathProjectionRemaining > 0;
   }
 
   private paddleBounceOffset(centeredOffset: number): number {
@@ -852,6 +889,26 @@ export class BreakoutoutoutInstance {
       },
       true
     );
+  }
+
+  private capBallVelocity(velocity: { x: number; y: number }): { x: number; y: number; z: 0 } {
+    const speed = Math.hypot(velocity.x, velocity.y);
+    const cappedSpeed = this.capBallSpeed(speed);
+
+    if (speed <= MIN_MOVING_BALL_SPEED || cappedSpeed === speed) {
+      return { x: velocity.x, y: velocity.y, z: 0 };
+    }
+
+    const scale = cappedSpeed / speed;
+    return { x: velocity.x * scale, y: velocity.y * scale, z: 0 };
+  }
+
+  private capBallSpeed(speed: number): number {
+    if (this.maximumBallSpeed <= MIN_MOVING_BALL_SPEED) {
+      return 0;
+    }
+
+    return Math.min(speed, this.maximumBallSpeed);
   }
 }
 
@@ -1086,6 +1143,10 @@ function getFreshBrickKind(
     return 'life';
   }
 
+  if (specialBrickKinds.has('projector') && row === PROJECTOR_ROW && col === PROJECTOR_COL) {
+    return 'projector';
+  }
+
   return 'normal';
 }
 
@@ -1100,6 +1161,10 @@ function getBrickColor(kind: BrickKind, row: number, palette: number[]): number 
 
   if (kind === 'life') {
     return LIFE_COLOR;
+  }
+
+  if (kind === 'projector') {
+    return PROJECTOR_COLOR;
   }
 
   return palette[row % palette.length];
@@ -1118,6 +1183,10 @@ function getBrickPoints(kind: BrickKind, row: number): number {
     return 120;
   }
 
+  if (kind === 'projector') {
+    return 150;
+  }
+
   return (BRICK_ROWS - row) * 10;
 }
 
@@ -1134,6 +1203,10 @@ function getBonusBrickPoints(kind: BrickKind): number {
     return 140;
   }
 
+  if (kind === 'projector') {
+    return 170;
+  }
+
   return 80;
 }
 
@@ -1148,6 +1221,10 @@ function getBrickSound(kind: BrickKind): ToneName {
 
   if (kind === 'life') {
     return 'extraLife';
+  }
+
+  if (kind === 'projector') {
+    return 'projector';
   }
 
   return 'brick';
