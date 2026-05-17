@@ -213,6 +213,9 @@ const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
   barrelCurvature: 0.036,
   affineDistortion: 0.28
 };
+const POST_PROCESSING_REFERENCE_SHORT_SIDE = 720;
+const POST_PROCESSING_REFERENCE_WIDTH = 1280;
+const POST_PROCESSING_MIN_SCREEN_SCALE = 0.42;
 const POST_PROCESSING_CONTROLS: readonly PostProcessingControlDefinition[] = [
   { key: 'pixelSize', label: 'Pixel size', min: 1, max: 8, step: 1, decimals: 0 },
   { key: 'colorLevels', label: 'Color levels', min: 2, max: 32, step: 1, decimals: 0 },
@@ -522,6 +525,8 @@ export class BreakoutGame {
   private touchLastX = 0;
   private touchLastY = 0;
   private touchPaddleX: number | null = null;
+  private postProcessingScreenScale = 1;
+  private postProcessingColorBleedScale = 1;
 
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
     this.projectorDebug = options.projectorDebug ?? false;
@@ -630,17 +635,19 @@ export class BreakoutGame {
 
   private applyPostProcessingSettings(): void {
     const settings = this.postProcessingSettings;
+    const screenScale = this.postProcessingScreenScale;
+    const pixelSize = Math.max(1, settings.pixelSize * screenScale);
 
-    this.retroScenePass.setResolutionScale(1 / Math.max(1, settings.pixelSize));
+    this.retroScenePass.setResolutionScale(1 / pixelSize);
     this.postProcessingUniforms.colorLevels.value = settings.colorLevels;
-    this.postProcessingUniforms.scanlineStrength.value = settings.scanlineStrength;
+    this.postProcessingUniforms.scanlineStrength.value = settings.scanlineStrength * screenScale;
     this.postProcessingUniforms.scanlineDensity.value = settings.scanlineDensity;
     this.postProcessingUniforms.scanlineSpeed.value = settings.scanlineSpeed;
-    this.postProcessingUniforms.vignetteStrength.value = settings.vignetteStrength;
+    this.postProcessingUniforms.vignetteStrength.value = settings.vignetteStrength * screenScale;
     this.postProcessingUniforms.vignetteSmoothness.value = settings.vignetteSmoothness;
-    this.postProcessingUniforms.colorBleeding.value = settings.colorBleeding;
-    this.postProcessingUniforms.barrelCurvature.value = settings.barrelCurvature;
-    this.postProcessingUniforms.affineDistortion.value = settings.affineDistortion;
+    this.postProcessingUniforms.colorBleeding.value = settings.colorBleeding * this.postProcessingColorBleedScale;
+    this.postProcessingUniforms.barrelCurvature.value = settings.barrelCurvature * screenScale;
+    this.postProcessingUniforms.affineDistortion.value = settings.affineDistortion * screenScale;
   }
 
   private exportPostProcessingSettings(): string {
@@ -1236,6 +1243,11 @@ export class BreakoutGame {
   private readonly resize = (): void => {
     const width = Math.max(1, this.shell.clientWidth);
     const height = Math.max(1, this.shell.clientHeight);
+    const nextPostProcessingScreenScale = postProcessingScreenScaleForSize(width, height);
+    const nextPostProcessingColorBleedScale = postProcessingColorBleedScaleForSize(
+      width,
+      nextPostProcessingScreenScale
+    );
     const pixelRatio = Math.min(window.devicePixelRatio, 2);
     const aspect = width / height;
     const fovRadians = THREE.MathUtils.degToRad(CAMERA_FOV);
@@ -1252,6 +1264,15 @@ export class BreakoutGame {
 
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
+
+    if (
+      this.postProcessingScreenScale !== nextPostProcessingScreenScale ||
+      this.postProcessingColorBleedScale !== nextPostProcessingColorBleedScale
+    ) {
+      this.postProcessingScreenScale = nextPostProcessingScreenScale;
+      this.postProcessingColorBleedScale = nextPostProcessingColorBleedScale;
+      this.applyPostProcessingSettings();
+    }
   };
 
   private readonly tick = (time: number): void => {
@@ -4266,6 +4287,17 @@ function createPostProcessingUniforms(settings: PostProcessingSettings): PostPro
     barrelCurvature: uniform(settings.barrelCurvature),
     affineDistortion: uniform(settings.affineDistortion)
   };
+}
+
+function postProcessingScreenScaleForSize(width: number, height: number): number {
+  const shortSide = Math.max(1, Math.min(width, height));
+  const scale = shortSide / POST_PROCESSING_REFERENCE_SHORT_SIDE;
+
+  return clamp(scale, POST_PROCESSING_MIN_SCREEN_SCALE, 1);
+}
+
+function postProcessingColorBleedScaleForSize(width: number, screenScale: number): number {
+  return screenScale * (POST_PROCESSING_REFERENCE_WIDTH / Math.max(1, width));
 }
 
 function stopEventPropagation(event: Event): void {
