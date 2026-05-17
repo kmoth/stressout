@@ -25,6 +25,7 @@ import System, {
 } from 'three-nebula';
 import {
   BALL_RADIUS,
+  BALL_SPEED,
   BOARD_HEIGHT,
   BOARD_WIDTH,
   BreakoutInput,
@@ -53,10 +54,6 @@ type ProjectorBeamSettings = {
   dotRadius: number;
   dotSpacing: number;
   marchSpeed: number;
-  pulseBaseScale: number;
-  pulseScaleAmplitude: number;
-  pulseDistanceFrequency: number;
-  pulseTimeFrequency: number;
   renderOrder: number;
   z: number;
   maxDots: number;
@@ -121,13 +118,9 @@ const PADDLE_AUTOPILOT_EMISSIVE = 0x34d399;
 const PADDLE_BASE_EMISSIVE_INTENSITY = 0.28;
 const TRAJECTORY_PROJECTION_COLOR = 0x7dd3fc;
 const TRAJECTORY_PROJECTION_OPACITY = 0.86;
-const TRAJECTORY_PROJECTION_DOT_RADIUS = 0.048;
-const TRAJECTORY_PROJECTION_DOT_SPACING = 0.24;
+const TRAJECTORY_PROJECTION_DOT_RADIUS = 0.058;
+const TRAJECTORY_PROJECTION_DOT_SPACING = 0.2;
 const TRAJECTORY_PROJECTION_MARCH_SPEED = 0.60;
-const TRAJECTORY_PROJECTION_PULSE_BASE_SCALE = 0.88;
-const TRAJECTORY_PROJECTION_PULSE_SCALE_AMPLITUDE = 0.16;
-const TRAJECTORY_PROJECTION_PULSE_DISTANCE_FREQUENCY = 9;
-const TRAJECTORY_PROJECTION_PULSE_TIME_FREQUENCY = 18;
 const TRAJECTORY_PROJECTION_RENDER_ORDER = 24;
 const TRAJECTORY_PROJECTION_Z = 0.33;
 const TRAJECTORY_PROJECTION_MAX_DOTS = 320;
@@ -150,6 +143,8 @@ const PROJECTOR_DEBUG_ANGLE_SPEED = 1.45;
 const PROJECTOR_DEBUG_ANGLE_STEP = 0.08;
 const PROJECTOR_DEBUG_MAX_ANGLE = Math.PI * 0.46;
 const PROJECTOR_DEBUG_BEAM_SPEED = 1;
+const PROJECTOR_DEBUG_TEST_BALL_SPEED = BALL_SPEED;
+const PROJECTOR_DEBUG_TEST_MAX_COLLISIONS_PER_FRAME = 8;
 const PROJECTOR_DEBUG_COLORS = [0xf45b69, 0xf59f00, 0xf7d154, 0x2ec4b6, 0x4cc9f0, 0xa78bfa, 0x38bdf8] as const;
 const PROJECTOR_BEAM_DEFAULTS: ProjectorBeamSettings = {
   color: TRAJECTORY_PROJECTION_COLOR,
@@ -157,10 +152,6 @@ const PROJECTOR_BEAM_DEFAULTS: ProjectorBeamSettings = {
   dotRadius: TRAJECTORY_PROJECTION_DOT_RADIUS,
   dotSpacing: TRAJECTORY_PROJECTION_DOT_SPACING,
   marchSpeed: TRAJECTORY_PROJECTION_MARCH_SPEED,
-  pulseBaseScale: TRAJECTORY_PROJECTION_PULSE_BASE_SCALE,
-  pulseScaleAmplitude: TRAJECTORY_PROJECTION_PULSE_SCALE_AMPLITUDE,
-  pulseDistanceFrequency: TRAJECTORY_PROJECTION_PULSE_DISTANCE_FREQUENCY,
-  pulseTimeFrequency: TRAJECTORY_PROJECTION_PULSE_TIME_FREQUENCY,
   renderOrder: TRAJECTORY_PROJECTION_RENDER_ORDER,
   z: TRAJECTORY_PROJECTION_Z,
   maxDots: TRAJECTORY_PROJECTION_MAX_DOTS,
@@ -278,10 +269,6 @@ const PROJECTOR_BEAM_CONTROLS: readonly ProjectorBeamControlDefinition[] = [
   { key: 'dotRadius', label: 'Dot radius', min: 0.01, max: 0.16, step: 0.001, decimals: 3 },
   { key: 'dotSpacing', label: 'Dot spacing', min: 0.08, max: 1.2, step: 0.01, decimals: 2 },
   { key: 'marchSpeed', label: 'March speed', min: -4, max: 4, step: 0.01, decimals: 2 },
-  { key: 'pulseBaseScale', label: 'Pulse base', min: 0.1, max: 2.4, step: 0.01, decimals: 2 },
-  { key: 'pulseScaleAmplitude', label: 'Pulse amplitude', min: 0, max: 1.5, step: 0.01, decimals: 2 },
-  { key: 'pulseDistanceFrequency', label: 'Pulse distance', min: 0, max: 24, step: 0.1, decimals: 1 },
-  { key: 'pulseTimeFrequency', label: 'Pulse time', min: -36, max: 36, step: 0.1, decimals: 1 },
   { key: 'renderOrder', label: 'Render order', min: 0, max: 120, step: 1, decimals: 0 },
   { key: 'z', label: 'Render depth', min: -0.2, max: 1.2, step: 0.01, decimals: 2 },
   { key: 'maxDots', label: 'Max dots', min: 8, max: TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT, step: 1, decimals: 0 },
@@ -408,6 +395,18 @@ type TrajectorySegment = {
   distanceStart: number;
 };
 
+type TrajectoryProjectionCache = {
+  key: string;
+  points: TrajectoryPoint[];
+};
+
+type ProjectorDebugBall = {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+};
+
 type DesiredPlaneView = {
   instance: BreakoutoutoutInstance;
   trackIndex: number;
@@ -434,6 +433,7 @@ type InstanceView = {
   statusText: HudTextPlane;
   restartButtonText: HudTextPlane;
   renderState: BreakoutoutoutRenderState;
+  trajectoryProjectionCache: TrajectoryProjectionCache | null;
   appliedOpacity: number;
   targetOpacity: number;
   terminalVisualsApplied: boolean;
@@ -490,6 +490,7 @@ export class BreakoutGame {
   private readonly projectorBeamSettings: ProjectorBeamSettings = { ...PROJECTOR_BEAM_DEFAULTS };
   private projectorDebugAngle = 0;
   private projectorDebugBricks: BrickSnapshot[] = [];
+  private projectorDebugTestBall: ProjectorDebugBall | null = null;
 
   private nebula: NebulaRuntime | null = null;
   private accumulator = 0;
@@ -566,7 +567,9 @@ export class BreakoutGame {
         settings: this.projectorBeamSettings,
         onNumericChange: (key, value) => this.setProjectorBeamSetting(key, value),
         onColorChange: (color) => this.setProjectorBeamColor(color),
-        onReset: () => this.resetProjectorBeamSettings()
+        onReset: () => this.resetProjectorBeamSettings(),
+        onExport: () => this.exportProjectorBeamSettings(),
+        onLaunchTest: () => this.launchProjectorDebugBall()
       });
     }
 
@@ -652,6 +655,7 @@ export class BreakoutGame {
     }
 
     this.projectorBeamSettings[key] = nextValue;
+    this.invalidateTrajectoryProjectionCaches();
     this.projectorBeamPanel?.setValue(key, nextValue);
   }
 
@@ -668,7 +672,21 @@ export class BreakoutGame {
 
   private resetProjectorBeamSettings(): void {
     Object.assign(this.projectorBeamSettings, PROJECTOR_BEAM_DEFAULTS);
+    this.invalidateTrajectoryProjectionCaches();
     this.projectorBeamPanel?.setSettings(this.projectorBeamSettings);
+  }
+
+  private exportProjectorBeamSettings(): string {
+    return `const PROJECTOR_BEAM_DEFAULTS: ProjectorBeamSettings = ${formatProjectorBeamSettings(
+      this.projectorBeamSettings
+    )};`;
+  }
+
+  private invalidateTrajectoryProjectionCaches(): void {
+    for (const view of this.views) {
+      view.trajectoryProjectionCache = null;
+      view.trajectoryProjection.resetPhase();
+    }
   }
 
   static async create(root: HTMLElement, options: BreakoutGameOptions = {}): Promise<BreakoutGame> {
@@ -775,6 +793,7 @@ export class BreakoutGame {
       statusText,
       restartButtonText,
       renderState: state,
+      trajectoryProjectionCache: null,
       appliedOpacity: Number.NaN,
       targetOpacity: Number.NaN,
       terminalVisualsApplied: false,
@@ -1347,29 +1366,143 @@ export class BreakoutGame {
 
   private updateProjectorDebug(delta: number): void {
     const direction = Number(this.keys.has('ArrowRight')) - Number(this.keys.has('ArrowLeft'));
-    if (direction === 0) {
-      return;
+    if (direction !== 0) {
+      this.adjustProjectorDebugAngle(direction * PROJECTOR_DEBUG_ANGLE_SPEED * Math.max(delta, 0));
     }
 
-    this.adjustProjectorDebugAngle(direction * PROJECTOR_DEBUG_ANGLE_SPEED * Math.max(delta, 0));
+    this.updateProjectorDebugTestBall(delta);
   }
 
   private adjustProjectorDebugAngle(delta: number): void {
+    if (delta === 0) {
+      return;
+    }
+
+    const previousAngle = this.projectorDebugAngle;
     this.projectorDebugAngle = clamp(
       this.projectorDebugAngle + delta,
       -PROJECTOR_DEBUG_MAX_ANGLE,
       PROJECTOR_DEBUG_MAX_ANGLE
     );
+
+    if (this.projectorDebugAngle !== previousAngle) {
+      this.projectorDebugTestBall = null;
+      this.invalidateTrajectoryProjectionCaches();
+    }
   }
 
   private resetProjectorDebug(): void {
     this.projectorDebugAngle = 0;
+    this.projectorDebugTestBall = null;
     this.projectorDebugBricks = createProjectorDebugBricks();
+    this.invalidateTrajectoryProjectionCaches();
     for (const view of this.views) {
       for (const [id, mesh] of [...view.bricks]) {
         this.removeBrickMesh(view, id, mesh);
       }
     }
+  }
+
+  private launchProjectorDebugBall(): void {
+    this.projectorDebugTestBall = this.createProjectorDebugBall(PROJECTOR_DEBUG_TEST_BALL_SPEED);
+    this.invalidateTrajectoryProjectionCaches();
+  }
+
+  private updateProjectorDebugTestBall(delta: number): void {
+    const ball = this.projectorDebugTestBall;
+    if (!ball) {
+      return;
+    }
+
+    const speed = Math.hypot(ball.vx, ball.vy);
+    if (speed <= this.projectorBeamSettings.epsilon) {
+      this.projectorDebugTestBall = null;
+      return;
+    }
+
+    let remainingDistance = Math.max(delta, 0) * speed;
+    let x = ball.x;
+    let y = ball.y;
+    let directionX = ball.vx / speed;
+    let directionY = ball.vy / speed;
+    const activeBricks = this.projectorDebugBricks.filter((brick) => !brick.hit);
+    const obstacles = activeBricks.map((brick) => ({
+      x: brick.x,
+      y: brick.y,
+      width: brick.width,
+      height: brick.height
+    }));
+
+    for (
+      let collisionCount = 0;
+      remainingDistance > this.projectorBeamSettings.epsilon
+        && collisionCount < PROJECTOR_DEBUG_TEST_MAX_COLLISIONS_PER_FRAME;
+      collisionCount += 1
+    ) {
+      const paddleDistance = distanceToPaddleY(y, directionY, this.projectorBeamSettings);
+      const hit = nearestTrajectoryHit(
+        x,
+        y,
+        directionX,
+        directionY,
+        obstacles,
+        this.projectorBeamSettings
+      );
+      const hitDistance = hit?.distance ?? Number.POSITIVE_INFINITY;
+      const finishDistance = paddleDistance ?? Number.POSITIVE_INFINITY;
+
+      if (
+        finishDistance <= hitDistance + this.projectorBeamSettings.cornerTolerance
+        && finishDistance <= remainingDistance
+      ) {
+        this.projectorDebugTestBall = null;
+        this.invalidateTrajectoryProjectionCaches();
+        return;
+      }
+
+      if (!hit || hitDistance > remainingDistance) {
+        x += directionX * remainingDistance;
+        y += directionY * remainingDistance;
+        remainingDistance = 0;
+        break;
+      }
+
+      x += directionX * hitDistance;
+      y += directionY * hitDistance;
+      remainingDistance -= hitDistance;
+
+      if (typeof hit.brickIndex === 'number') {
+        const brick = activeBricks[hit.brickIndex];
+        if (brick) {
+          brick.hit = true;
+          activeBricks.splice(hit.brickIndex, 1);
+          obstacles.splice(hit.brickIndex, 1);
+          this.invalidateTrajectoryProjectionCaches();
+        }
+      }
+
+      if (hit.normalX !== 0) {
+        directionX *= -1;
+      }
+      if (hit.normalY !== 0) {
+        directionY *= -1;
+      }
+
+      const advancedPoint = clampTrajectoryPointToPlayfield(
+        x + hit.normalX * this.projectorBeamSettings.surfaceClearance,
+        y + hit.normalY * this.projectorBeamSettings.surfaceClearance,
+        this.projectorBeamSettings
+      );
+      x = advancedPoint.x;
+      y = advancedPoint.y;
+    }
+
+    this.projectorDebugTestBall = {
+      x,
+      y,
+      vx: directionX * speed,
+      vy: directionY * speed
+    };
   }
 
   private createProjectorDebugSnapshot(): BreakoutoutoutSnapshot {
@@ -1386,7 +1519,7 @@ export class BreakoutGame {
       pathProjectionRemaining: 1,
       pathProjectionActive: true,
       ballSpeedMultiplier: 1,
-      ball: this.createProjectorDebugBall(),
+      ball: this.projectorDebugTestBall ?? this.createProjectorDebugBall(),
       bricks: this.projectorDebugBricks.map((brick) => ({ ...brick }))
     };
   }
@@ -1399,12 +1532,12 @@ export class BreakoutGame {
     };
   }
 
-  private createProjectorDebugBall(): BreakoutoutoutSnapshot['ball'] {
+  private createProjectorDebugBall(speed = PROJECTOR_DEBUG_BEAM_SPEED): BreakoutoutoutSnapshot['ball'] {
     return {
       x: 0,
       y: PADDLE_Y,
-      vx: Math.sin(this.projectorDebugAngle) * PROJECTOR_DEBUG_BEAM_SPEED,
-      vy: Math.cos(this.projectorDebugAngle) * PROJECTOR_DEBUG_BEAM_SPEED
+      vx: Math.sin(this.projectorDebugAngle) * speed,
+      vy: Math.cos(this.projectorDebugAngle) * speed
     };
   }
 
@@ -1813,9 +1946,7 @@ export class BreakoutGame {
     view.ballMesh.rotation.y += 0.075 * this.gameSpeed;
     view.group.rotation.x = Math.sin(time * 0.32 + state.id * 0.2) * 0.018;
     view.trajectoryProjection.update(
-      !terminal && state.phase === 'playing' && state.pathProjectionActive
-        ? createTrajectoryProjectionPath(state, this.projectorBeamSettings)
-        : [],
+      this.trajectoryProjectionPathForView(view, state, terminal),
       time,
       this.projectorBeamSettings
     );
@@ -1859,6 +1990,37 @@ export class BreakoutGame {
     this.applyInstancePlayStateVisuals(view, terminal);
     this.updateFatalMissGreyscaleVisuals(view, this.shouldGreyscaleForFatalMiss(view), terminal, time);
     this.updateDangerVisuals(view, state.fatalMissPending && !terminal, terminal, time);
+  }
+
+  private trajectoryProjectionPathForView(
+    view: InstanceView,
+    state: BreakoutoutoutRenderState,
+    terminal: boolean
+  ): readonly TrajectoryPoint[] {
+    if (terminal || state.phase !== 'playing' || !state.pathProjectionActive) {
+      view.trajectoryProjectionCache = null;
+      view.trajectoryProjection.resetPhase();
+      return [];
+    }
+
+    const key = this.trajectoryProjectionCacheKey(state);
+    if (view.trajectoryProjectionCache?.key !== key) {
+      view.trajectoryProjectionCache = {
+        key,
+        points: createTrajectoryProjectionPath(state, this.projectorBeamSettings)
+      };
+      view.trajectoryProjection.resetPhase();
+    }
+
+    return view.trajectoryProjectionCache.points;
+  }
+
+  private trajectoryProjectionCacheKey(state: BreakoutoutoutRenderState): string {
+    return [
+      this.projectorDebug ? `debug:${this.projectorDebugAngle.toFixed(5)}` : 'game',
+      trajectoryProjectionPathSettingsSignature(this.projectorBeamSettings),
+      trajectoryProjectionBrickSignature(state.bricks)
+    ].join('|');
   }
 
   private removeBrickMesh(view: InstanceView, id: string, mesh: THREE.Mesh): void {
@@ -2742,6 +2904,9 @@ class TrajectoryProjection {
   private readonly position = new THREE.Vector3();
   private readonly rotation = new THREE.Quaternion();
   private readonly scale = new THREE.Vector3(1, 1, 1);
+  private phaseDistance = 0;
+  private lastUpdateTime: number | null = null;
+  private lastOrigin: TrajectoryPoint | null = null;
 
   constructor() {
     const geometry = new THREE.CircleGeometry(1, 14);
@@ -2769,21 +2934,23 @@ class TrajectoryProjection {
     const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
 
     if (totalLength <= settings.epsilon) {
+      this.resetPhase();
       this.mesh.count = 0;
       this.mesh.visible = false;
       return;
     }
 
+    const firstSegment = segments[0];
+    this.updatePhase(time, firstSegment, settings);
+
     let dotIndex = 0;
     const dotLimit = Math.min(Math.floor(settings.maxDots), TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT);
-    let distance = positiveModulo(time * settings.marchSpeed, settings.dotSpacing);
+    let distance = positiveModulo(this.phaseDistance, settings.dotSpacing);
 
     while (distance <= totalLength && dotIndex < dotLimit) {
       const point = sampleTrajectorySegments(segments, distance);
-      const pulse = settings.pulseBaseScale
-        + settings.pulseScaleAmplitude * Math.sin(distance * settings.pulseDistanceFrequency - time * settings.pulseTimeFrequency);
       this.position.set(point.x, point.y, settings.z);
-      this.scale.setScalar(Math.max(0.001, settings.dotRadius * pulse));
+      this.scale.setScalar(Math.max(0.001, settings.dotRadius));
       this.matrix.compose(this.position, this.rotation, this.scale);
       this.mesh.setMatrixAt(dotIndex, this.matrix);
 
@@ -2794,6 +2961,33 @@ class TrajectoryProjection {
     this.mesh.count = dotIndex;
     this.mesh.visible = dotIndex > 0;
     this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private updatePhase(time: number, firstSegment: TrajectorySegment, settings: ProjectorBeamSettings): void {
+    const directionX = (firstSegment.end.x - firstSegment.start.x) / firstSegment.length;
+    const directionY = (firstSegment.end.y - firstSegment.start.y) / firstSegment.length;
+    const lastTime = this.lastUpdateTime;
+    const lastOrigin = this.lastOrigin;
+    const hasLastPhase = lastTime !== null && lastOrigin !== null;
+    const delta = hasLastPhase ? time - lastTime : 0;
+
+    if (!hasLastPhase || !Number.isFinite(delta) || delta < 0) {
+      this.phaseDistance = 0;
+    } else {
+      const originTravel = (firstSegment.start.x - lastOrigin.x) * directionX
+        + (firstSegment.start.y - lastOrigin.y) * directionY;
+      this.phaseDistance += delta * settings.marchSpeed - originTravel;
+      this.phaseDistance = positiveModulo(this.phaseDistance, settings.dotSpacing);
+    }
+
+    this.lastUpdateTime = time;
+    this.lastOrigin = { ...firstSegment.start };
+  }
+
+  resetPhase(): void {
+    this.phaseDistance = 0;
+    this.lastUpdateTime = null;
+    this.lastOrigin = null;
   }
 
   private applySettings(settings: ProjectorBeamSettings): void {
@@ -3108,11 +3302,41 @@ function sampleTrajectorySegments(segments: readonly TrajectorySegment[], distan
   return fallback ? { ...fallback } : { x: 0, y: 0 };
 }
 
+function trajectoryProjectionPathSettingsSignature(settings: ProjectorBeamSettings): string {
+  return [
+    settings.maxBounces,
+    settings.maxDistance,
+    settings.epsilon,
+    settings.wallGuard,
+    settings.cornerTolerance,
+    settings.surfaceClearance
+  ].map(formatTrajectorySignatureNumber).join(',');
+}
+
+function trajectoryProjectionBrickSignature(bricks: readonly BrickSnapshot[]): string {
+  return bricks
+    .filter((brick) => !brick.hit)
+    .map((brick) => [
+      brick.id,
+      formatTrajectorySignatureNumber(brick.x),
+      formatTrajectorySignatureNumber(brick.y),
+      formatTrajectorySignatureNumber(brick.width),
+      formatTrajectorySignatureNumber(brick.height)
+    ].join(':'))
+    .join('|');
+}
+
+function formatTrajectorySignatureNumber(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(5) : String(value);
+}
+
 type ProjectorBeamPanelOptions = {
   settings: ProjectorBeamSettings;
   onNumericChange: (key: ProjectorBeamNumericSettingKey, value: number) => void;
   onColorChange: (color: number) => void;
   onReset: () => void;
+  onExport: () => string;
+  onLaunchTest?: () => void;
 };
 
 type ProjectorBeamControlElements = {
@@ -3128,6 +3352,8 @@ class ProjectorBeamPanel {
   private readonly toggleButton: HTMLButtonElement;
   private readonly colorInput: HTMLInputElement;
   private readonly colorValue: HTMLSpanElement;
+  private readonly outputWrap: HTMLDivElement;
+  private readonly output: HTMLTextAreaElement;
   private readonly status: HTMLSpanElement;
   private readonly controls = new Map<ProjectorBeamNumericSettingKey, ProjectorBeamControlElements>();
   private readonly options: ProjectorBeamPanelOptions;
@@ -3166,7 +3392,21 @@ class ProjectorBeamPanel {
       this.options.onReset();
       this.status.textContent = 'Reset';
     });
-    actions.append(resetButton);
+    const buttons: HTMLButtonElement[] = [resetButton];
+    if (this.options.onLaunchTest) {
+      const launchButton = this.createActionButton('Launch');
+      launchButton.addEventListener('click', () => {
+        this.options.onLaunchTest?.();
+        this.status.textContent = 'Launched';
+      });
+      buttons.push(launchButton);
+    }
+    const exportButton = this.createActionButton('Export');
+    exportButton.addEventListener('click', () => this.exportSettings());
+    const copyButton = this.createActionButton('Copy');
+    copyButton.addEventListener('click', () => this.copyExport());
+    buttons.push(exportButton, copyButton);
+    actions.append(...buttons);
     header.append(title, actions);
     this.body.append(header);
 
@@ -3181,8 +3421,18 @@ class ProjectorBeamPanel {
     }
     this.status = document.createElement('span');
     this.status.className = 'post-processing-panel__status';
-    form.append(this.status);
     this.body.append(form);
+
+    this.outputWrap = document.createElement('div');
+    this.outputWrap.className = 'post-processing-panel__output';
+    this.outputWrap.hidden = true;
+    this.output = document.createElement('textarea');
+    this.output.readOnly = true;
+    this.output.spellcheck = false;
+    this.output.rows = 8;
+    this.output.setAttribute('aria-label', 'Exported projector beam settings');
+    this.outputWrap.append(this.output, this.status);
+    this.body.append(this.outputWrap);
 
     this.element.append(this.toggleButton, this.body);
     root.appendChild(this.element);
@@ -3199,6 +3449,7 @@ class ProjectorBeamPanel {
     const formattedColor = formatHexColor(color);
     this.colorInput.value = formattedColor;
     this.colorValue.textContent = formattedColor.toUpperCase();
+    this.refreshExportIfVisible();
   }
 
   setValue(key: ProjectorBeamNumericSettingKey, value: number): void {
@@ -3212,6 +3463,7 @@ class ProjectorBeamPanel {
     elements.range.value = String(value);
     elements.numeric.value = formattedValue;
     elements.value.textContent = formattedValue;
+    this.refreshExportIfVisible();
   }
 
   private createColorControl(color: number): {
@@ -3242,6 +3494,7 @@ class ProjectorBeamPanel {
       }
 
       this.options.onColorChange(parsedColor);
+      this.refreshExportIfVisible();
       this.status.textContent = '';
     });
 
@@ -3316,6 +3569,43 @@ class ProjectorBeamPanel {
     this.element.classList.toggle('is-collapsed', !expanded);
     this.toggleButton.textContent = expanded ? 'Hide Beam' : 'Beam';
     this.toggleButton.setAttribute('aria-expanded', String(expanded));
+  }
+
+  private exportSettings(): void {
+    this.output.value = this.options.onExport();
+    this.outputWrap.hidden = false;
+    this.output.focus();
+    this.output.select();
+    this.status.textContent = 'Exported';
+  }
+
+  private copyExport(): void {
+    if (this.output.value.length === 0) {
+      this.exportSettings();
+    }
+
+    if (navigator.clipboard) {
+      void navigator.clipboard.writeText(this.output.value)
+        .then(() => {
+          this.status.textContent = 'Copied';
+        })
+        .catch(() => {
+          this.output.focus();
+          this.output.select();
+          this.status.textContent = 'Select text';
+        });
+      return;
+    }
+
+    this.output.focus();
+    this.output.select();
+    this.status.textContent = 'Select text';
+  }
+
+  private refreshExportIfVisible(): void {
+    if (!this.outputWrap.hidden) {
+      this.output.value = this.options.onExport();
+    }
   }
 }
 
@@ -3910,6 +4200,21 @@ function parseHexColor(value: string): number | null {
   }
 
   return Number.parseInt(normalizedValue.slice(1), 16);
+}
+
+function formatProjectorBeamSettings(settings: ProjectorBeamSettings): string {
+  const lines = [
+    `  color: ${formatHexNumber(settings.color)}`,
+    ...PROJECTOR_BEAM_CONTROLS.map((control) => {
+      return `  ${control.key}: ${formatExportNumber(settings[control.key])}`;
+    })
+  ];
+
+  return `{\n${lines.join(',\n')}\n}`;
+}
+
+function formatHexNumber(value: number): string {
+  return `0x${normalizeProjectorBeamColor(value).toString(16).padStart(6, '0')}`;
 }
 
 function formatPostProcessingSettings(settings: PostProcessingSettings): string {
