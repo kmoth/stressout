@@ -196,6 +196,17 @@ const MAIN_MENU_BUTTON_WORLD_HEIGHT = 1.02;
 const MAIN_MENU_BUTTON_MAX_WIDTH = 5.35;
 const MAIN_MENU_START_BUTTON_Y = -0.68;
 const MAIN_MENU_BUTTON_Z = 0.18;
+const PAUSE_MENU_RENDER_ORDER = MAIN_MENU_RENDER_ORDER + 10;
+const PAUSE_MENU_CAMERA_DISTANCE = MAIN_MENU_CAMERA_DISTANCE - 0.2;
+const PAUSE_MENU_PANEL_WORLD_HEIGHT = 3.15;
+const PAUSE_MENU_PANEL_MAX_WIDTH = 6.55;
+const PAUSE_MENU_TITLE_WORLD_HEIGHT = 0.68;
+const PAUSE_MENU_TITLE_MAX_WIDTH = 4.8;
+const PAUSE_MENU_TITLE_Y = 0.58;
+const PAUSE_MENU_BUTTON_WORLD_HEIGHT = 0.86;
+const PAUSE_MENU_BUTTON_MAX_WIDTH = 4.5;
+const PAUSE_MENU_BUTTON_Y = -0.58;
+const PAUSE_MENU_Z = MAIN_MENU_BUTTON_Z + 0.22;
 const SPLIT_TUTORIAL_STORAGE_KEY = 'breakoutoutout.splitTutorialSeen';
 const SPLIT_TUTORIAL_DURATION = 5;
 const SPLIT_TUTORIAL_WORLD_HEIGHT = 1.18;
@@ -445,6 +456,10 @@ type InstanceSelection = {
 
 type MainMenuAction = 'start';
 
+type PauseMenuAction = 'resume';
+
+type MenuButtonAction = MainMenuAction | PauseMenuAction;
+
 type SplitTutorialMode = 'keyboard' | 'touch';
 
 type InstanceView = {
@@ -481,6 +496,7 @@ export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot' | 'san
 
 export class BreakoutGame {
   private readonly shell: HTMLDivElement;
+  private readonly pauseButton: HTMLButtonElement;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 180);
   private readonly renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
@@ -490,6 +506,7 @@ export class BreakoutGame {
   private readonly postProcessingPanel: PostProcessingPanel;
   private readonly projectorBeamPanel: ProjectorBeamPanel | null = null;
   private readonly mainMenu: MainMenuView;
+  private readonly pauseMenu: PauseMenuView;
   private readonly splitTutorial = new SplitTutorialView(MAIN_MENU_RENDER_ORDER + 6);
   private readonly stats = new Stats();
   private readonly sound = new SoundBank();
@@ -539,8 +556,11 @@ export class BreakoutGame {
   private fatalMissInstance: BreakoutoutoutInstance | null = null;
   private totalGameOver = false;
   private gameStarted = false;
+  private paused = false;
   private hoveredMenuAction: MainMenuAction | null = null;
   private pressedMenuAction: MainMenuAction | null = null;
+  private hoveredPauseMenuAction: PauseMenuAction | null = null;
+  private pressedPauseMenuAction: PauseMenuAction | null = null;
   private splitTutorialActive = false;
   private splitTutorialElapsed = 0;
   private splitTutorialSeen = getSplitTutorialSeenFlag();
@@ -585,9 +605,12 @@ export class BreakoutGame {
     root.replaceChildren(this.shell);
 
     this.renderer.domElement.className = 'three-layer';
+    this.renderer.domElement.tabIndex = -1;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x07080b, 0);
     this.shell.appendChild(this.renderer.domElement);
+    this.pauseButton = this.createPauseButton();
+    this.shell.appendChild(this.pauseButton);
     // this.stats.showPanel(0);
     // this.shell.appendChild(this.stats.dom);
     this.scene.add(this.camera);
@@ -619,7 +642,10 @@ export class BreakoutGame {
     this.createLighting();
     this.mainMenu = new MainMenuView();
     this.mainMenu.setVisible(!this.gameStarted);
+    this.pauseMenu = new PauseMenuView();
+    this.pauseMenu.setVisible(false);
     this.scene.add(this.mainMenu.group);
+    this.scene.add(this.pauseMenu.group);
     this.scene.add(this.splitTutorial.mesh);
     this.attachInput();
     this.resize();
@@ -1069,6 +1095,25 @@ export class BreakoutGame {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (event.code === 'KeyP') {
+      event.preventDefault();
+      if (!event.repeat) {
+        this.setPaused(!this.paused);
+      }
+      return;
+    }
+
+    if (this.isPauseButtonEventTarget(event.target) && (event.code === 'Space' || event.code === 'Enter')) {
+      return;
+    }
+
+    if (this.paused) {
+      if (isGameControlKey(event.code)) {
+        event.preventDefault();
+      }
+      return;
+    }
+
     if (this.splitTutorialActive) {
       if (isGameControlKey(event.code)) {
         event.preventDefault();
@@ -1150,6 +1195,15 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (this.paused) {
+      event.preventDefault();
+      const action = this.pauseMenuActionAtPointer(event.clientX, event.clientY);
+      this.setHoveredPauseMenuAction(action);
+      this.setPressedPauseMenuAction(action);
+      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      return;
+    }
+
     if (this.splitTutorialActive) {
       event.preventDefault();
       this.completeSplitTutorial();
@@ -1187,6 +1241,14 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (this.paused) {
+      event.preventDefault();
+      const action = this.pauseMenuActionAtPointer(event.clientX, event.clientY);
+      this.setHoveredPauseMenuAction(action);
+      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      return;
+    }
+
     if (this.isMainMenuActive) {
       this.updateMainMenuCursor(event.clientX, event.clientY);
       return;
@@ -1208,6 +1270,19 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
+    if (this.paused) {
+      event.preventDefault();
+      const action = this.pauseMenuActionAtPointer(event.clientX, event.clientY);
+      const pressedAction = this.pressedPauseMenuAction;
+      this.setHoveredPauseMenuAction(action);
+      this.setPressedPauseMenuAction(null);
+      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      if (action && action === pressedAction) {
+        this.handlePauseMenuAction(action);
+      }
+      return;
+    }
+
     if (this.isMainMenuActive) {
       event.preventDefault();
       const action = this.menuActionAtPointer(event.clientX, event.clientY);
@@ -1243,6 +1318,12 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerCancel = (event: PointerEvent): void => {
+    if (this.paused) {
+      event.preventDefault();
+      this.setPressedPauseMenuAction(null);
+      return;
+    }
+
     if (this.isMainMenuActive) {
       event.preventDefault();
       this.setPressedMenuAction(null);
@@ -1460,6 +1541,16 @@ export class BreakoutGame {
     const delta = Math.min(frameTime, MAX_DT);
     this.lastTime = time;
     this.stats.begin();
+
+    if (this.paused) {
+      this.accumulator = 0;
+      this.pauseMenu.update(time / 1000, this.camera, PAUSE_MENU_CAMERA_DISTANCE);
+      this.renderPipeline.render();
+      this.stats.end();
+      requestAnimationFrame(this.tick);
+      return;
+    }
+
     this.updateGameSpeedTween(delta);
     this.updatePlaneZTransitions(delta);
     this.updateInstanceOpacityTweens(delta);
@@ -1507,6 +1598,87 @@ export class BreakoutGame {
     this.stats.end();
     requestAnimationFrame(this.tick);
   };
+
+  private createPauseButton(): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'pause-toggle';
+    button.textContent = 'Pause';
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('aria-keyshortcuts', 'P');
+    button.addEventListener('click', () => this.setPaused(!this.paused));
+    return button;
+  }
+
+  private setPaused(paused: boolean): void {
+    if (this.paused === paused) {
+      return;
+    }
+
+    this.paused = paused;
+    this.shell.classList.toggle('is-paused', paused);
+    this.pauseMenu.setVisible(paused);
+    this.pauseButton.textContent = paused ? 'Resume' : 'Pause';
+    this.pauseButton.setAttribute('aria-expanded', String(paused));
+    this.pauseButton.setAttribute('aria-pressed', String(paused));
+    this.setHoveredPauseMenuAction(null);
+    this.setPressedPauseMenuAction(null);
+
+    this.keys.clear();
+    if (this.activeTouchPointerId !== null) {
+      this.releaseTouchPointer(this.activeTouchPointerId);
+    }
+    this.clearTouchInput();
+    this.accumulator = 0;
+    this.lastTime = performance.now();
+
+    if (paused) {
+      this.renderer.domElement.style.cursor = '';
+      this.renderer.domElement.focus({ preventScroll: true });
+      return;
+    }
+
+    this.renderer.domElement.style.cursor = '';
+    this.renderer.domElement.focus({ preventScroll: true });
+  }
+
+  private handlePauseMenuAction(action: PauseMenuAction): void {
+    if (action === 'resume') {
+      this.setPaused(false);
+    }
+  }
+
+  private pauseMenuActionAtPointer(clientX: number, clientY: number): PauseMenuAction | null {
+    if (!this.paused || !this.updatePointerRay(clientX, clientY)) {
+      return null;
+    }
+
+    const hit = this.pointerRaycaster.intersectObjects(this.pauseMenu.buttonMeshes, false)[0];
+    const action = hit?.object.userData.pauseMenuAction;
+    return isPauseMenuAction(action) ? action : null;
+  }
+
+  private setHoveredPauseMenuAction(action: PauseMenuAction | null): void {
+    if (this.hoveredPauseMenuAction === action) {
+      return;
+    }
+
+    this.hoveredPauseMenuAction = action;
+    this.pauseMenu.setHoveredAction(action);
+  }
+
+  private setPressedPauseMenuAction(action: PauseMenuAction | null): void {
+    if (this.pressedPauseMenuAction === action) {
+      return;
+    }
+
+    this.pressedPauseMenuAction = action;
+    this.pauseMenu.setPressedAction(action);
+  }
+
+  private isPauseButtonEventTarget(target: EventTarget | null): boolean {
+    return target instanceof Node && this.pauseButton.contains(target);
+  }
 
   private launchOrAdvanceSelected(): void {
     if (!this.gameStarted || this.splitSequenceActive || this.totalGameOver || this.isFatalMissSequenceActive()) {
@@ -4675,6 +4847,101 @@ class MainMenuView {
   }
 }
 
+class PauseMenuView {
+  readonly group = new THREE.Group();
+  readonly buttonMeshes: THREE.Mesh[];
+
+  private readonly cameraForward = new THREE.Vector3();
+  private readonly panel = new PauseMenuPanelPlane(PAUSE_MENU_RENDER_ORDER);
+  private readonly title = new HudTextPlane({
+    fontSize: 54,
+    fill: '#f8fafc',
+    weight: 'bold',
+    paddingX: 0,
+    paddingY: 0,
+    renderOrder: PAUSE_MENU_RENDER_ORDER + 1
+  });
+  private readonly buttons = new Map<PauseMenuAction, MenuButtonPlane>();
+  private hoveredAction: PauseMenuAction | null = null;
+  private pressedAction: PauseMenuAction | null = null;
+
+  constructor() {
+    this.panel.mesh.position.set(0, 0, PAUSE_MENU_Z);
+    scaleMenuCanvasPlane(
+      this.panel.mesh,
+      this.panel.cssWidth,
+      this.panel.cssHeight,
+      PAUSE_MENU_PANEL_WORLD_HEIGHT,
+      PAUSE_MENU_PANEL_MAX_WIDTH
+    );
+    this.group.add(this.panel.mesh);
+
+    this.title.setText('Paused', 360);
+    this.title.mesh.position.set(0, PAUSE_MENU_TITLE_Y, PAUSE_MENU_Z + 0.04);
+    scaleMenuCanvasPlane(
+      this.title.mesh,
+      this.title.cssWidth,
+      this.title.cssHeight,
+      PAUSE_MENU_TITLE_WORLD_HEIGHT,
+      PAUSE_MENU_TITLE_MAX_WIDTH
+    );
+    this.group.add(this.title.mesh);
+
+    const resumeButton = new MenuButtonPlane('resume', 'resume', PAUSE_MENU_RENDER_ORDER + 2, 'pauseMenuAction');
+    resumeButton.mesh.position.set(0, PAUSE_MENU_BUTTON_Y, PAUSE_MENU_Z + 0.06);
+    scaleMenuCanvasPlane(
+      resumeButton.mesh,
+      resumeButton.cssWidth,
+      resumeButton.cssHeight,
+      PAUSE_MENU_BUTTON_WORLD_HEIGHT,
+      PAUSE_MENU_BUTTON_MAX_WIDTH
+    );
+    this.buttons.set('resume', resumeButton);
+
+    this.buttonMeshes = [resumeButton.mesh];
+    this.group.add(resumeButton.mesh);
+  }
+
+  setVisible(visible: boolean): void {
+    this.group.visible = visible;
+    if (!visible) {
+      this.setHoveredAction(null);
+      this.setPressedAction(null);
+    }
+  }
+
+  setHoveredAction(action: PauseMenuAction | null): void {
+    this.hoveredAction = action;
+    this.refreshButtonStates();
+  }
+
+  setPressedAction(action: PauseMenuAction | null): void {
+    this.pressedAction = action;
+    this.refreshButtonStates();
+  }
+
+  update(time: number, camera: THREE.Camera, distance: number): void {
+    if (!this.group.visible) {
+      return;
+    }
+
+    camera.getWorldDirection(this.cameraForward);
+    this.group.position
+      .copy(camera.position)
+      .addScaledVector(this.cameraForward, distance);
+    this.group.quaternion.copy(camera.quaternion);
+    this.group.translateY(Math.sin(time * 0.76) * 0.028);
+    this.group.rotateZ(Math.sin(time * 0.38) * 0.0035);
+  }
+
+  private refreshButtonStates(): void {
+    for (const [action, button] of this.buttons) {
+      const hovered = action === this.hoveredAction;
+      button.setState(hovered, hovered && action === this.pressedAction);
+    }
+  }
+}
+
 class MainMenuTitlePlane {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
 
@@ -4767,6 +5034,91 @@ class MainMenuTitlePlane {
   }
 }
 
+class PauseMenuPanelPlane {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  readonly cssWidth = 620;
+  readonly cssHeight = 300;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private texture: THREE.CanvasTexture;
+
+  constructor(renderOrder: number) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create pause menu panel canvas.');
+    }
+
+    this.context = context;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.forceTransparent = true;
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = renderOrder;
+    this.resizeCanvas(
+      Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
+      Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
+    );
+    this.draw();
+  }
+
+  private draw(): void {
+    this.context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    this.context.clearRect(0, 0, this.cssWidth, this.cssHeight);
+
+    this.context.shadowColor = 'rgba(45, 212, 191, 0.26)';
+    this.context.shadowBlur = 22;
+    roundedRectPath(this.context, 10, 10, this.cssWidth - 20, this.cssHeight - 20, 10);
+    this.context.fillStyle = 'rgba(7, 10, 15, 0.88)';
+    this.context.fill();
+
+    this.context.shadowBlur = 0;
+    this.context.lineWidth = 3;
+    this.context.strokeStyle = 'rgba(167, 243, 208, 0.6)';
+    this.context.stroke();
+
+    this.context.lineWidth = 1;
+    this.context.strokeStyle = 'rgba(240, 201, 93, 0.26)';
+    roundedRectPath(this.context, 24, 24, this.cssWidth - 48, this.cssHeight - 48, 6);
+    this.context.stroke();
+
+    this.context.globalAlpha = 0.16;
+    this.context.strokeStyle = '#a7f3d0';
+    for (let y = 40; y < this.cssHeight - 36; y += 16) {
+      this.context.beginPath();
+      this.context.moveTo(44, y);
+      this.context.lineTo(this.cssWidth - 44, y);
+      this.context.stroke();
+    }
+    this.context.globalAlpha = 1;
+
+    this.texture.needsUpdate = true;
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+}
+
 class MenuButtonPlane {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   readonly cssWidth = 430;
@@ -4780,7 +5132,12 @@ class MenuButtonPlane {
   private hovered = false;
   private pressed = false;
 
-  constructor(action: MainMenuAction, label: string, renderOrder: number) {
+  constructor(
+    action: MenuButtonAction,
+    label: string,
+    renderOrder: number,
+    userDataKey: 'menuAction' | 'pauseMenuAction' = 'menuAction'
+  ) {
     const context = this.canvas.getContext('2d');
     if (!context) {
       throw new Error('Unable to create main menu button canvas.');
@@ -4801,7 +5158,7 @@ class MenuButtonPlane {
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
-    this.mesh.userData.menuAction = action;
+    this.mesh.userData[userDataKey] = action;
     this.resizeCanvas(
       Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
       Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
@@ -5168,6 +5525,10 @@ function isTouchTutorialDevice(): boolean {
 
 function isMainMenuAction(value: unknown): value is MainMenuAction {
   return value === 'start';
+}
+
+function isPauseMenuAction(value: unknown): value is PauseMenuAction {
+  return value === 'resume';
 }
 
 function isGameControlKey(code: string): boolean {
