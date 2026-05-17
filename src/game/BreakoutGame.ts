@@ -1756,6 +1756,7 @@ export class BreakoutGame {
       targetPaddleX: 0,
       autoPilotRemaining: 0,
       autoPilotActive: false,
+      persistentAutoPilotActive: false,
       pathProjectionRemaining: 1,
       pathProjectionActive: true,
       ballSpeedMultiplier: 1,
@@ -1895,10 +1896,11 @@ export class BreakoutGame {
     const sourceZ = sourceView?.group.position.z ?? this.targetPlaneZForTrack(Math.max(0, sourceIndex));
     const sourceTrackIndex = sourceView?.trackIndex ?? this.trackIndexForInstanceIndex(Math.max(0, sourceIndex));
     const insertIndex = this.insertIndexAfterSourceTrack(pending.source, sourceTrackIndex);
+    const cloneOptions = this.createSplitRealityOptions(pending.source);
     const clone = new BreakoutoutoutInstance(
       this.nextInstanceId,
-      createSplitRealitySnapshot(pending.snapshot, { specialBrickKinds: this.instanceOptions.specialBrickKinds }),
-      this.instanceOptions
+      createSplitRealitySnapshot(pending.snapshot, { specialBrickKinds: cloneOptions.specialBrickKinds }),
+      cloneOptions
     );
     this.nextInstanceId += 1;
     if (sourceTrackIndex < this.selectedTrackIndex) {
@@ -1926,6 +1928,13 @@ export class BreakoutGame {
       elapsed: 0,
       duration,
       onComplete
+    };
+  }
+
+  private createSplitRealityOptions(source: BreakoutoutoutInstance): BreakoutoutoutOptions {
+    return {
+      ...this.instanceOptions,
+      autopilot: source.hasPersistentAutopilot()
     };
   }
 
@@ -2241,7 +2250,11 @@ export class BreakoutGame {
     const terminal = isTerminalPhase(state.phase);
 
     view.paddleMesh.position.set(state.paddleX, PADDLE_Y, 0.06);
-    this.updatePaddleAutopilotEffect(view.paddleMesh, state.autoPilotActive, time);
+    this.updatePaddleAutopilotEffect(
+      view.paddleMesh,
+      state.autoPilotActive || state.persistentAutoPilotActive,
+      time
+    );
     view.ballMesh.position.set(state.ball.x, state.ball.y, 0.18);
     view.ballMesh.rotation.x += 0.05 * this.gameSpeed;
     view.ballMesh.rotation.y += 0.075 * this.gameSpeed;
@@ -2418,6 +2431,10 @@ export class BreakoutGame {
       return `READY ${Math.max(1, Math.ceil(state.readyRemaining))}s`;
     }
 
+    if (state.persistentAutoPilotActive) {
+      return 'AUTO';
+    }
+
     if (state.pathProjectionActive) {
       return `PATH ${Math.ceil(state.pathProjectionRemaining)}s`;
     }
@@ -2515,7 +2532,11 @@ export class BreakoutGame {
     });
 
     if (!greyscale && !terminal) {
-      this.updatePaddleAutopilotEffect(view.paddleMesh, view.renderState.autoPilotActive, time);
+      this.updatePaddleAutopilotEffect(
+        view.paddleMesh,
+        view.renderState.autoPilotActive || view.renderState.persistentAutoPilotActive,
+        time
+      );
     }
   }
 

@@ -89,6 +89,7 @@ export type BreakoutoutoutSnapshot = {
   targetPaddleX: number;
   autoPilotRemaining: number;
   autoPilotActive: boolean;
+  persistentAutoPilotActive: boolean;
   pathProjectionRemaining: number;
   pathProjectionActive: boolean;
   ballSpeedMultiplier: number;
@@ -301,7 +302,8 @@ export class BreakoutoutoutInstance {
       paddleX: this.paddleX,
       targetPaddleX: this.targetPaddleX,
       autoPilotRemaining: this.autoPilotRemaining,
-      autoPilotActive: this.isAutopilotActive,
+      autoPilotActive: this.isTemporaryAutopilotActive,
+      persistentAutoPilotActive: this.isPersistentAutopilotActive,
       pathProjectionRemaining: this.pathProjectionRemaining,
       pathProjectionActive: this.isPathProjectionActive,
       ballSpeedMultiplier: this.ballSpeedMultiplier,
@@ -329,7 +331,8 @@ export class BreakoutoutoutInstance {
       paddleX: this.paddleX,
       targetPaddleX: this.targetPaddleX,
       autoPilotRemaining: this.autoPilotRemaining,
-      autoPilotActive: this.isAutopilotActive,
+      autoPilotActive: this.isTemporaryAutopilotActive,
+      persistentAutoPilotActive: this.isPersistentAutopilotActive,
       pathProjectionRemaining: this.pathProjectionRemaining,
       pathProjectionActive: this.isPathProjectionActive,
       ballSpeedMultiplier: this.ballSpeedMultiplier,
@@ -394,6 +397,10 @@ export class BreakoutoutoutInstance {
 
   isActive(): boolean {
     return this.phase === 'ready' || this.phase === 'playing';
+  }
+
+  hasPersistentAutopilot(): boolean {
+    return this.persistentAutopilot;
   }
 
   isCleared(): boolean {
@@ -522,7 +529,7 @@ export class BreakoutoutoutInstance {
       return;
     }
 
-    if (this.phase === 'playing' && this.isAutopilotActive) {
+    if (this.phase === 'playing' && this.isPaddleAutopilotActive) {
       const ballX = this.ballBody.translation().x;
       const step = clamp(ballX - this.paddleX, -maxStep, maxStep);
       this.setPaddlePosition(this.paddleX + step);
@@ -839,10 +846,22 @@ export class BreakoutoutoutInstance {
     return BALL_SPEED * this.ballSpeedMultiplier * this.gameSpeed;
   }
 
-  private get isAutopilotActive(): boolean {
+  private get isPaddleAutopilotActive(): boolean {
     return this.phase !== 'game-over'
       && this.phase !== 'cleared'
       && (this.persistentAutopilot || this.autoPilotRemaining > 0);
+  }
+
+  private get isTemporaryAutopilotActive(): boolean {
+    return this.phase !== 'game-over'
+      && this.phase !== 'cleared'
+      && this.autoPilotRemaining > 0;
+  }
+
+  private get isPersistentAutopilotActive(): boolean {
+    return this.phase !== 'game-over'
+      && this.phase !== 'cleared'
+      && this.persistentAutopilot;
   }
 
   private get isPathProjectionActive(): boolean {
@@ -852,7 +871,7 @@ export class BreakoutoutoutInstance {
   }
 
   private paddleBounceOffset(centeredOffset: number): number {
-    if (!this.isAutopilotActive) {
+    if (!this.isPaddleAutopilotActive) {
       return clamp(centeredOffset, -1, 1);
     }
 
