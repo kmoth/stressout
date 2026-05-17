@@ -398,6 +398,7 @@ type TrajectorySegment = {
 type TrajectoryProjectionCache = {
   key: string;
   points: TrajectoryPoint[];
+  visibleStartDistance: number;
 };
 
 type ProjectorDebugBall = {
@@ -546,8 +547,8 @@ export class BreakoutGame {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setClearColor(0x07080b, 0);
     this.shell.appendChild(this.renderer.domElement);
-    this.stats.showPanel(0);
-    this.shell.appendChild(this.stats.dom);
+    // this.stats.showPanel(0);
+    // this.shell.appendChild(this.stats.dom);
     this.scene.add(this.camera);
 
     this.postProcessingUniforms = createPostProcessingUniforms(this.postProcessingSettings);
@@ -1950,6 +1951,7 @@ export class BreakoutGame {
       time,
       this.projectorBeamSettings
     );
+    this.applyMeshOpacity(view, view.trajectoryProjection.mesh);
     this.updatePlaneCornerHud(view, state);
     this.updatePlaneStatusHud(view, state);
 
@@ -2007,12 +2009,21 @@ export class BreakoutGame {
     if (view.trajectoryProjectionCache?.key !== key) {
       view.trajectoryProjectionCache = {
         key,
-        points: createTrajectoryProjectionPath(state, this.projectorBeamSettings)
+        points: createTrajectoryProjectionPath(state, this.projectorBeamSettings),
+        visibleStartDistance: 0
       };
       view.trajectoryProjection.resetPhase();
     }
 
-    return view.trajectoryProjectionCache.points;
+    const cache = view.trajectoryProjectionCache;
+    const visiblePath = trimTrajectoryProjectionPath(
+      cache.points,
+      state.ball,
+      cache.visibleStartDistance,
+      this.projectorBeamSettings
+    );
+    cache.visibleStartDistance = visiblePath.distance;
+    return visiblePath.points;
   }
 
   private trajectoryProjectionCacheKey(state: BreakoutoutoutRenderState): string {
@@ -3302,6 +3313,99 @@ function sampleTrajectorySegments(segments: readonly TrajectorySegment[], distan
   return fallback ? { ...fallback } : { x: 0, y: 0 };
 }
 
+function trimTrajectoryProjectionPath(
+  points: readonly TrajectoryPoint[],
+  ball: BreakoutoutoutRenderState['ball'],
+  previousDistance: number,
+  settings: ProjectorBeamSettings
+): { points: TrajectoryPoint[]; distance: number } {
+  const segments = createTrajectorySegments(points, settings);
+  const lastSegment = segments[segments.length - 1];
+  const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
+  if (totalLength <= settings.epsilon) {
+    return { points: [], distance: 0 };
+  }
+
+  const distance = nearestTrajectoryProgress(segments, ball, previousDistance, settings);
+  if (totalLength - distance <= settings.epsilon) {
+    return { points: [], distance };
+  }
+
+  const visiblePoints: TrajectoryPoint[] = [sampleTrajectorySegments(segments, distance)];
+  for (const segment of segments) {
+    if (segment.distanceStart + segment.length <= distance + settings.epsilon) {
+      continue;
+    }
+
+    visiblePoints.push({ ...segment.end });
+  }
+
+  return {
+    points: visiblePoints.length > 1 ? visiblePoints : [],
+    distance
+  };
+}
+
+function nearestTrajectoryProgress(
+  segments: readonly TrajectorySegment[],
+  ball: BreakoutoutoutRenderState['ball'],
+  previousDistance: number,
+  settings: ProjectorBeamSettings
+): number {
+  const lastSegment = segments[segments.length - 1];
+  const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
+  const searchStart = clamp(previousDistance - settings.dotSpacing * 1.5, 0, totalLength);
+  const velocityLength = Math.hypot(ball.vx, ball.vy);
+  const velocityX = velocityLength > settings.epsilon ? ball.vx / velocityLength : 0;
+  const velocityY = velocityLength > settings.epsilon ? ball.vy / velocityLength : 0;
+  let bestDistance = clamp(previousDistance, 0, totalLength);
+  let bestDistanceSquared = Number.POSITIVE_INFINITY;
+  let bestAlignment = Number.NEGATIVE_INFINITY;
+
+  for (const segment of segments) {
+    const segmentEndDistance = segment.distanceStart + segment.length;
+    if (segmentEndDistance < searchStart) {
+      continue;
+    }
+
+    const dx = segment.end.x - segment.start.x;
+    const dy = segment.end.y - segment.start.y;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= settings.epsilon * settings.epsilon) {
+      continue;
+    }
+
+    const minAmount = clamp((searchStart - segment.distanceStart) / segment.length, 0, 1);
+    const projectedAmount = clamp(
+      ((ball.x - segment.start.x) * dx + (ball.y - segment.start.y) * dy) / lengthSquared,
+      minAmount,
+      1
+    );
+    const projectedX = segment.start.x + dx * projectedAmount;
+    const projectedY = segment.start.y + dy * projectedAmount;
+    const distanceX = ball.x - projectedX;
+    const distanceY = ball.y - projectedY;
+    const distanceSquared = distanceX * distanceX + distanceY * distanceY;
+    const alignment = velocityLength > settings.epsilon
+      ? (dx / segment.length) * velocityX + (dy / segment.length) * velocityY
+      : 0;
+
+    if (
+      distanceSquared < bestDistanceSquared - settings.epsilon
+      || (
+        Math.abs(distanceSquared - bestDistanceSquared) <= settings.epsilon
+        && alignment > bestAlignment
+      )
+    ) {
+      bestDistanceSquared = distanceSquared;
+      bestAlignment = alignment;
+      bestDistance = segment.distanceStart + segment.length * projectedAmount;
+    }
+  }
+
+  return clamp(bestDistance, 0, totalLength);
+}
+
 function trajectoryProjectionPathSettingsSignature(settings: ProjectorBeamSettings): string {
   return [
     settings.maxBounces,
@@ -3376,6 +3480,7 @@ class ProjectorBeamPanel {
     this.toggleButton.textContent = 'Beam';
     this.toggleButton.setAttribute('aria-expanded', 'false');
     this.toggleButton.addEventListener('click', () => this.setExpanded(!this.expanded));
+    this.toggleButton.setAttribute('hidden', 'true');
 
     this.body = document.createElement('div');
     this.body.className = 'post-processing-panel__body';
@@ -3651,6 +3756,7 @@ class PostProcessingPanel {
     this.toggleButton.textContent = 'Post FX';
     this.toggleButton.setAttribute('aria-expanded', 'false');
     this.toggleButton.addEventListener('click', () => this.setExpanded(!this.expanded));
+    this.toggleButton.setAttribute('hidden', 'true');
 
     this.body = document.createElement('div');
     this.body.className = 'post-processing-panel__body';
