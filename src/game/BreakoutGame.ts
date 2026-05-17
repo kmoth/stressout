@@ -131,6 +131,7 @@ const TRAJECTORY_PROJECTION_EPSILON = 0.0001;
 const TRAJECTORY_PROJECTION_WALL_GUARD = 0.045;
 const TRAJECTORY_PROJECTION_CORNER_TOLERANCE = 0.018;
 const TRAJECTORY_PROJECTION_SURFACE_CLEARANCE = 0.008;
+const TRAJECTORY_PROJECTION_CACHE_MAX_BALL_DRIFT = BALL_RADIUS * 1.35;
 const PROJECTOR_DEBUG_BRICK_COUNT = 34;
 const PROJECTOR_DEBUG_BRICK_MIN_WIDTH = 0.56;
 const PROJECTOR_DEBUG_BRICK_MAX_WIDTH = 1.34;
@@ -2022,6 +2023,24 @@ export class BreakoutGame {
       cache.visibleStartDistance,
       this.projectorBeamSettings
     );
+
+    if (visiblePath.driftSquared > TRAJECTORY_PROJECTION_CACHE_MAX_BALL_DRIFT ** 2) {
+      view.trajectoryProjectionCache = {
+        key,
+        points: createTrajectoryProjectionPath(state, this.projectorBeamSettings),
+        visibleStartDistance: 0
+      };
+      view.trajectoryProjection.resetPhase();
+      const refreshedPath = trimTrajectoryProjectionPath(
+        view.trajectoryProjectionCache.points,
+        state.ball,
+        view.trajectoryProjectionCache.visibleStartDistance,
+        this.projectorBeamSettings
+      );
+      view.trajectoryProjectionCache.visibleStartDistance = refreshedPath.distance;
+      return refreshedPath.points;
+    }
+
     cache.visibleStartDistance = visiblePath.distance;
     return visiblePath.points;
   }
@@ -3318,17 +3337,18 @@ function trimTrajectoryProjectionPath(
   ball: BreakoutoutoutRenderState['ball'],
   previousDistance: number,
   settings: ProjectorBeamSettings
-): { points: TrajectoryPoint[]; distance: number } {
+): { points: TrajectoryPoint[]; distance: number; driftSquared: number } {
   const segments = createTrajectorySegments(points, settings);
   const lastSegment = segments[segments.length - 1];
   const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
   if (totalLength <= settings.epsilon) {
-    return { points: [], distance: 0 };
+    return { points: [], distance: 0, driftSquared: 0 };
   }
 
-  const distance = nearestTrajectoryProgress(segments, ball, previousDistance, settings);
+  const progress = nearestTrajectoryProgress(segments, ball, previousDistance, settings);
+  const distance = progress.distance;
   if (totalLength - distance <= settings.epsilon) {
-    return { points: [], distance };
+    return { points: [], distance, driftSquared: progress.driftSquared };
   }
 
   const visiblePoints: TrajectoryPoint[] = [sampleTrajectorySegments(segments, distance)];
@@ -3342,7 +3362,8 @@ function trimTrajectoryProjectionPath(
 
   return {
     points: visiblePoints.length > 1 ? visiblePoints : [],
-    distance
+    distance,
+    driftSquared: progress.driftSquared
   };
 }
 
@@ -3351,7 +3372,7 @@ function nearestTrajectoryProgress(
   ball: BreakoutoutoutRenderState['ball'],
   previousDistance: number,
   settings: ProjectorBeamSettings
-): number {
+): { distance: number; driftSquared: number } {
   const lastSegment = segments[segments.length - 1];
   const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
   const searchStart = clamp(previousDistance - settings.dotSpacing * 1.5, 0, totalLength);
@@ -3403,7 +3424,10 @@ function nearestTrajectoryProgress(
     }
   }
 
-  return clamp(bestDistance, 0, totalLength);
+  return {
+    distance: clamp(bestDistance, 0, totalLength),
+    driftSquared: Number.isFinite(bestDistanceSquared) ? bestDistanceSquared : 0
+  };
 }
 
 function trajectoryProjectionPathSettingsSignature(settings: ProjectorBeamSettings): string {
