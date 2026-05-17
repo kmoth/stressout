@@ -36,13 +36,17 @@ const sandbox = parseBooleanParam(searchParams, 'sandbox') || parseBooleanParam(
 const specialBrickKinds = parseSpecialBrickKinds(searchParams);
 const initialInstanceCount = parseIntegerParam(searchParams, ['instances', 'instanceCount', 'initialInstances']);
 const ballSpeedMultiplierActiveGameCap = parseIntegerParam(searchParams, BALL_SPEED_MULTIPLIER_CAP_PARAM_NAMES);
+const projectorDebug = parseBooleanParam(searchParams, 'projectorDebug')
+  || parseBooleanParam(searchParams, 'projectorDebugMode')
+  || parseBooleanParam(searchParams, 'debugProjector');
 
 BreakoutGame.create(root, {
   autopilot,
   sandbox,
   specialBrickKinds,
   initialInstanceCount,
-  ballSpeedMultiplierActiveGameCap
+  ballSpeedMultiplierActiveGameCap,
+  projectorDebug
 }).catch((error: unknown) => {
   console.error(error);
   root.innerHTML = `

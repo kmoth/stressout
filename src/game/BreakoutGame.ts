@@ -47,6 +47,30 @@ import {
 } from './BreakoutoutoutInstance';
 import { SoundBank } from './sound';
 
+type ProjectorBeamSettings = {
+  color: number;
+  opacity: number;
+  dotRadius: number;
+  dotSpacing: number;
+  marchSpeed: number;
+  pulseBaseScale: number;
+  pulseScaleAmplitude: number;
+  pulseDistanceFrequency: number;
+  pulseTimeFrequency: number;
+  renderOrder: number;
+  z: number;
+  maxDots: number;
+  maxBounces: number;
+  maxDistance: number;
+  epsilon: number;
+  wallGuard: number;
+  cornerTolerance: number;
+  surfaceClearance: number;
+};
+
+type ProjectorBeamSettingKey = keyof ProjectorBeamSettings;
+type ProjectorBeamNumericSettingKey = Exclude<ProjectorBeamSettingKey, 'color'>;
+
 const MAX_DT = 1 / 20;
 const PLANE_Z_GAP = 5;
 const DEFAULT_INITIAL_INSTANCE_COUNT = 1;
@@ -96,15 +120,57 @@ const PADDLE_AUTOPILOT_COLOR = 0xeafffb;
 const PADDLE_AUTOPILOT_EMISSIVE = 0x34d399;
 const PADDLE_BASE_EMISSIVE_INTENSITY = 0.28;
 const TRAJECTORY_PROJECTION_COLOR = 0x7dd3fc;
+const TRAJECTORY_PROJECTION_OPACITY = 0.86;
 const TRAJECTORY_PROJECTION_DOT_RADIUS = 0.048;
-const TRAJECTORY_PROJECTION_DOT_SPACING = 0.34;
-const TRAJECTORY_PROJECTION_MARCH_SPEED = 1.7;
+const TRAJECTORY_PROJECTION_DOT_SPACING = 0.24;
+const TRAJECTORY_PROJECTION_MARCH_SPEED = 0.60;
+const TRAJECTORY_PROJECTION_PULSE_BASE_SCALE = 0.88;
+const TRAJECTORY_PROJECTION_PULSE_SCALE_AMPLITUDE = 0.16;
+const TRAJECTORY_PROJECTION_PULSE_DISTANCE_FREQUENCY = 9;
+const TRAJECTORY_PROJECTION_PULSE_TIME_FREQUENCY = 18;
 const TRAJECTORY_PROJECTION_RENDER_ORDER = 24;
 const TRAJECTORY_PROJECTION_Z = 0.33;
 const TRAJECTORY_PROJECTION_MAX_DOTS = 320;
+const TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT = 640;
 const TRAJECTORY_PROJECTION_MAX_BOUNCES = 52;
 const TRAJECTORY_PROJECTION_MAX_DISTANCE = 260;
 const TRAJECTORY_PROJECTION_EPSILON = 0.0001;
+const TRAJECTORY_PROJECTION_WALL_GUARD = 0.045;
+const TRAJECTORY_PROJECTION_CORNER_TOLERANCE = 0.018;
+const TRAJECTORY_PROJECTION_SURFACE_CLEARANCE = 0.008;
+const PROJECTOR_DEBUG_BRICK_COUNT = 34;
+const PROJECTOR_DEBUG_BRICK_MIN_WIDTH = 0.56;
+const PROJECTOR_DEBUG_BRICK_MAX_WIDTH = 1.34;
+const PROJECTOR_DEBUG_BRICK_MIN_HEIGHT = 0.32;
+const PROJECTOR_DEBUG_BRICK_MAX_HEIGHT = 0.6;
+const PROJECTOR_DEBUG_BRICK_GAP = 0.16;
+const PROJECTOR_DEBUG_MIN_Y = PADDLE_Y + 1.35;
+const PROJECTOR_DEBUG_MAX_Y = HALF_HEIGHT - 1.05;
+const PROJECTOR_DEBUG_ANGLE_SPEED = 1.45;
+const PROJECTOR_DEBUG_ANGLE_STEP = 0.08;
+const PROJECTOR_DEBUG_MAX_ANGLE = Math.PI * 0.46;
+const PROJECTOR_DEBUG_BEAM_SPEED = 1;
+const PROJECTOR_DEBUG_COLORS = [0xf45b69, 0xf59f00, 0xf7d154, 0x2ec4b6, 0x4cc9f0, 0xa78bfa, 0x38bdf8] as const;
+const PROJECTOR_BEAM_DEFAULTS: ProjectorBeamSettings = {
+  color: TRAJECTORY_PROJECTION_COLOR,
+  opacity: TRAJECTORY_PROJECTION_OPACITY,
+  dotRadius: TRAJECTORY_PROJECTION_DOT_RADIUS,
+  dotSpacing: TRAJECTORY_PROJECTION_DOT_SPACING,
+  marchSpeed: TRAJECTORY_PROJECTION_MARCH_SPEED,
+  pulseBaseScale: TRAJECTORY_PROJECTION_PULSE_BASE_SCALE,
+  pulseScaleAmplitude: TRAJECTORY_PROJECTION_PULSE_SCALE_AMPLITUDE,
+  pulseDistanceFrequency: TRAJECTORY_PROJECTION_PULSE_DISTANCE_FREQUENCY,
+  pulseTimeFrequency: TRAJECTORY_PROJECTION_PULSE_TIME_FREQUENCY,
+  renderOrder: TRAJECTORY_PROJECTION_RENDER_ORDER,
+  z: TRAJECTORY_PROJECTION_Z,
+  maxDots: TRAJECTORY_PROJECTION_MAX_DOTS,
+  maxBounces: TRAJECTORY_PROJECTION_MAX_BOUNCES,
+  maxDistance: TRAJECTORY_PROJECTION_MAX_DISTANCE,
+  epsilon: TRAJECTORY_PROJECTION_EPSILON,
+  wallGuard: TRAJECTORY_PROJECTION_WALL_GUARD,
+  cornerTolerance: TRAJECTORY_PROJECTION_CORNER_TOLERANCE,
+  surfaceClearance: TRAJECTORY_PROJECTION_SURFACE_CLEARANCE
+};
 const HUD_TEXTURE_SCALE = 2;
 const HUD_FONT_FAMILY = 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 const PLANE_HUD_RENDER_ORDER = 80;
@@ -197,6 +263,35 @@ type PostProcessingControlDefinition = {
   step: number;
   decimals: number;
 };
+
+type ProjectorBeamControlDefinition = {
+  key: ProjectorBeamNumericSettingKey;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  decimals: number;
+};
+
+const PROJECTOR_BEAM_CONTROLS: readonly ProjectorBeamControlDefinition[] = [
+  { key: 'opacity', label: 'Opacity', min: 0.05, max: 1, step: 0.01, decimals: 2 },
+  { key: 'dotRadius', label: 'Dot radius', min: 0.01, max: 0.16, step: 0.001, decimals: 3 },
+  { key: 'dotSpacing', label: 'Dot spacing', min: 0.08, max: 1.2, step: 0.01, decimals: 2 },
+  { key: 'marchSpeed', label: 'March speed', min: -4, max: 4, step: 0.01, decimals: 2 },
+  { key: 'pulseBaseScale', label: 'Pulse base', min: 0.1, max: 2.4, step: 0.01, decimals: 2 },
+  { key: 'pulseScaleAmplitude', label: 'Pulse amplitude', min: 0, max: 1.5, step: 0.01, decimals: 2 },
+  { key: 'pulseDistanceFrequency', label: 'Pulse distance', min: 0, max: 24, step: 0.1, decimals: 1 },
+  { key: 'pulseTimeFrequency', label: 'Pulse time', min: -36, max: 36, step: 0.1, decimals: 1 },
+  { key: 'renderOrder', label: 'Render order', min: 0, max: 120, step: 1, decimals: 0 },
+  { key: 'z', label: 'Render depth', min: -0.2, max: 1.2, step: 0.01, decimals: 2 },
+  { key: 'maxDots', label: 'Max dots', min: 8, max: TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT, step: 1, decimals: 0 },
+  { key: 'maxBounces', label: 'Max bounces', min: 1, max: 160, step: 1, decimals: 0 },
+  { key: 'maxDistance', label: 'Max distance', min: 8, max: 520, step: 1, decimals: 0 },
+  { key: 'epsilon', label: 'Epsilon', min: 0.00001, max: 0.02, step: 0.00001, decimals: 5 },
+  { key: 'wallGuard', label: 'Wall guard', min: 0, max: 0.3, step: 0.001, decimals: 3 },
+  { key: 'cornerTolerance', label: 'Corner tolerance', min: 0, max: 0.12, step: 0.001, decimals: 3 },
+  { key: 'surfaceClearance', label: 'Surface clearance', min: 0.0005, max: 0.05, step: 0.0005, decimals: 4 }
+] as const;
 
 type PostProcessingUniforms = {
   colorLevels: THREE.UniformNode<'float', number>;
@@ -351,6 +446,7 @@ type InstanceView = {
 export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot' | 'sandbox' | 'specialBrickKinds'> & {
   initialInstanceCount?: number;
   ballSpeedMultiplierActiveGameCap?: number;
+  projectorDebug?: boolean;
 };
 
 export class BreakoutGame {
@@ -362,6 +458,7 @@ export class BreakoutGame {
   private readonly retroScenePass: ReturnType<typeof retroPass>;
   private readonly postProcessingUniforms: PostProcessingUniforms;
   private readonly postProcessingPanel: PostProcessingPanel;
+  private readonly projectorBeamPanel: ProjectorBeamPanel | null = null;
   private readonly stats = new Stats();
   private readonly sound = new SoundBank();
   private readonly keys = new Set<string>();
@@ -378,6 +475,7 @@ export class BreakoutGame {
   // private readonly particleTexture: THREE.CanvasTexture;
   private readonly initialInstanceCount: number;
   private readonly autopilot: boolean;
+  private readonly projectorDebug: boolean;
   private readonly ballSpeedMultiplierActiveGameCap: number;
   private readonly instanceOptions: BreakoutoutoutOptions;
   private readonly instanceSoundPosition = new THREE.Vector3();
@@ -389,6 +487,9 @@ export class BreakoutGame {
   private readonly ballSpeedMultiplierTargets = new Map<BreakoutoutoutInstance, number>();
   private readonly ballSpeedMultiplierTweens = new Map<BreakoutoutoutInstance, BallSpeedMultiplierTween>();
   private readonly postProcessingSettings: PostProcessingSettings = { ...POST_PROCESSING_DEFAULTS };
+  private readonly projectorBeamSettings: ProjectorBeamSettings = { ...PROJECTOR_BEAM_DEFAULTS };
+  private projectorDebugAngle = 0;
+  private projectorDebugBricks: BrickSnapshot[] = [];
 
   private nebula: NebulaRuntime | null = null;
   private accumulator = 0;
@@ -420,8 +521,14 @@ export class BreakoutGame {
   private touchPaddleX: number | null = null;
 
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
-    this.initialInstanceCount = normalizeInitialInstanceCount(options.initialInstanceCount);
+    this.projectorDebug = options.projectorDebug ?? false;
+    this.initialInstanceCount = this.projectorDebug
+      ? 1
+      : normalizeInitialInstanceCount(options.initialInstanceCount);
     this.autopilot = options.autopilot ?? false;
+    if (this.projectorDebug) {
+      this.projectorDebugBricks = createProjectorDebugBricks();
+    }
     this.ballSpeedMultiplierActiveGameCap = normalizeBallSpeedMultiplierActiveGameCap(
       options.ballSpeedMultiplierActiveGameCap
     );
@@ -454,6 +561,14 @@ export class BreakoutGame {
       onReset: () => this.resetPostProcessingSettings(),
       onExport: () => this.exportPostProcessingSettings()
     });
+    if (this.projectorDebug) {
+      this.projectorBeamPanel = new ProjectorBeamPanel(this.shell, {
+        settings: this.projectorBeamSettings,
+        onNumericChange: (key, value) => this.setProjectorBeamSetting(key, value),
+        onColorChange: (color) => this.setProjectorBeamColor(color),
+        onReset: () => this.resetProjectorBeamSettings()
+      });
+    }
 
     // this.particleTexture = createParticleTexture();
     this.createLighting();
@@ -529,13 +644,41 @@ export class BreakoutGame {
     )};`;
   }
 
+  private setProjectorBeamSetting(key: ProjectorBeamNumericSettingKey, value: number): void {
+    const nextValue = normalizeProjectorBeamValue(key, value);
+    if (this.projectorBeamSettings[key] === nextValue) {
+      this.projectorBeamPanel?.setValue(key, nextValue);
+      return;
+    }
+
+    this.projectorBeamSettings[key] = nextValue;
+    this.projectorBeamPanel?.setValue(key, nextValue);
+  }
+
+  private setProjectorBeamColor(color: number): void {
+    const nextColor = normalizeProjectorBeamColor(color);
+    if (this.projectorBeamSettings.color === nextColor) {
+      this.projectorBeamPanel?.setColor(nextColor);
+      return;
+    }
+
+    this.projectorBeamSettings.color = nextColor;
+    this.projectorBeamPanel?.setColor(nextColor);
+  }
+
+  private resetProjectorBeamSettings(): void {
+    Object.assign(this.projectorBeamSettings, PROJECTOR_BEAM_DEFAULTS);
+    this.projectorBeamPanel?.setSettings(this.projectorBeamSettings);
+  }
+
   static async create(root: HTMLElement, options: BreakoutGameOptions = {}): Promise<BreakoutGame> {
     await RAPIER.init();
     const game = new BreakoutGame(root, options);
     await game.renderer.init();
     game.createNebulaSystem();
     for (let index = 0; index < game.initialInstanceCount; index += 1) {
-      game.addInstance(new BreakoutoutoutInstance(game.nextInstanceId, undefined, game.instanceOptions));
+      const snapshot = game.projectorDebug ? game.createProjectorDebugSnapshot() : undefined;
+      game.addInstance(new BreakoutoutoutInstance(game.nextInstanceId, snapshot, game.instanceOptions));
       game.nextInstanceId += 1;
     }
     requestAnimationFrame(game.tick);
@@ -831,6 +974,21 @@ export class BreakoutGame {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (this.projectorDebug && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
+      event.preventDefault();
+      this.keys.add(event.code);
+      this.adjustProjectorDebugAngle(
+        (event.code === 'ArrowRight' ? 1 : -1) * PROJECTOR_DEBUG_ANGLE_STEP
+      );
+      return;
+    }
+
+    if (this.projectorDebug && event.code === 'KeyR') {
+      event.preventDefault();
+      this.resetProjectorDebug();
+      return;
+    }
+
     const isOneShotKey = event.code === 'ArrowUp'
       || event.code === 'ArrowDown'
       || event.code === 'Space'
@@ -1085,23 +1243,29 @@ export class BreakoutGame {
     this.updateInstanceOpacityTweens(delta);
     this.updateBallSpeedMultiplierTweens(delta);
     this.updateSplitBloom(delta);
-    this.accumulator += delta;
 
-    while (this.accumulator >= FIXED_STEP) {
-      for (let index = 0; index < this.instances.length; index += 1) {
-        const instance = this.instances[index];
-        const fatalSequenceInstance = this.isFatalMissSequenceActive() ? this.fatalMissInstance : null;
-        if (fatalSequenceInstance && instance !== fatalSequenceInstance) {
-          continue;
+    if (this.projectorDebug) {
+      this.updateProjectorDebug(delta);
+      this.accumulator = 0;
+    } else {
+      this.accumulator += delta;
+
+      while (this.accumulator >= FIXED_STEP) {
+        for (let index = 0; index < this.instances.length; index += 1) {
+          const instance = this.instances[index];
+          const fatalSequenceInstance = this.isFatalMissSequenceActive() ? this.fatalMissInstance : null;
+          if (fatalSequenceInstance && instance !== fatalSequenceInstance) {
+            continue;
+          }
+
+          const allowPaddleInput = !this.totalGameOver && !fatalSequenceInstance;
+          const input = allowPaddleInput && !this.autopilot && index === this.selectedIndex && instance.isActive()
+            ? this.currentInput
+            : IDLE_INPUT;
+          this.handleInstanceEvents(instance, instance.step(FIXED_STEP, input));
         }
-
-        const allowPaddleInput = !this.totalGameOver && !fatalSequenceInstance;
-        const input = allowPaddleInput && !this.autopilot && index === this.selectedIndex && instance.isActive()
-          ? this.currentInput
-          : IDLE_INPUT;
-        this.handleInstanceEvents(instance, instance.step(FIXED_STEP, input));
+        this.accumulator -= FIXED_STEP;
       }
-      this.accumulator -= FIXED_STEP;
     }
 
     this.syncViews(time / 1000);
@@ -1175,9 +1339,73 @@ export class BreakoutGame {
     this.cameraPlaneTransition = null;
 
     for (let index = 0; index < this.initialInstanceCount; index += 1) {
-      this.addInstance(new BreakoutoutoutInstance(this.nextInstanceId, undefined, this.instanceOptions));
+      const snapshot = this.projectorDebug ? this.createProjectorDebugSnapshot() : undefined;
+      this.addInstance(new BreakoutoutoutInstance(this.nextInstanceId, snapshot, this.instanceOptions));
       this.nextInstanceId += 1;
     }
+  }
+
+  private updateProjectorDebug(delta: number): void {
+    const direction = Number(this.keys.has('ArrowRight')) - Number(this.keys.has('ArrowLeft'));
+    if (direction === 0) {
+      return;
+    }
+
+    this.adjustProjectorDebugAngle(direction * PROJECTOR_DEBUG_ANGLE_SPEED * Math.max(delta, 0));
+  }
+
+  private adjustProjectorDebugAngle(delta: number): void {
+    this.projectorDebugAngle = clamp(
+      this.projectorDebugAngle + delta,
+      -PROJECTOR_DEBUG_MAX_ANGLE,
+      PROJECTOR_DEBUG_MAX_ANGLE
+    );
+  }
+
+  private resetProjectorDebug(): void {
+    this.projectorDebugAngle = 0;
+    this.projectorDebugBricks = createProjectorDebugBricks();
+    for (const view of this.views) {
+      for (const [id, mesh] of [...view.bricks]) {
+        this.removeBrickMesh(view, id, mesh);
+      }
+    }
+  }
+
+  private createProjectorDebugSnapshot(): BreakoutoutoutSnapshot {
+    return {
+      score: 0,
+      lives: 3,
+      phase: 'playing',
+      readyRemaining: 0,
+      fatalMissPending: false,
+      paddleX: 0,
+      targetPaddleX: 0,
+      autoPilotRemaining: 0,
+      autoPilotActive: false,
+      pathProjectionRemaining: 1,
+      pathProjectionActive: true,
+      ballSpeedMultiplier: 1,
+      ball: this.createProjectorDebugBall(),
+      bricks: this.projectorDebugBricks.map((brick) => ({ ...brick }))
+    };
+  }
+
+  private createProjectorDebugRenderState(instance: BreakoutoutoutInstance): BreakoutoutoutRenderState {
+    return {
+      ...this.createProjectorDebugSnapshot(),
+      id: instance.id,
+      bricks: this.projectorDebugBricks
+    };
+  }
+
+  private createProjectorDebugBall(): BreakoutoutoutSnapshot['ball'] {
+    return {
+      x: 0,
+      y: PADDLE_Y,
+      vx: Math.sin(this.projectorDebugAngle) * PROJECTOR_DEBUG_BEAM_SPEED,
+      vy: Math.cos(this.projectorDebugAngle) * PROJECTOR_DEBUG_BEAM_SPEED
+    };
   }
 
   private handleInstanceEvents(instance: BreakoutoutoutInstance, events: BreakoutoutoutEvent[]): void {
@@ -1564,10 +1792,12 @@ export class BreakoutGame {
 
   private syncViews(time: number): void {
     for (const view of this.views) {
-      const state = {
-        ...view.instance.getRenderState(),
-        score: this.globalScore
-      };
+      const state = this.projectorDebug
+        ? this.createProjectorDebugRenderState(view.instance)
+        : {
+            ...view.instance.getRenderState(),
+            score: this.globalScore
+          };
       view.renderState = state;
       this.syncInstanceView(view, state, time);
     }
@@ -1584,9 +1814,10 @@ export class BreakoutGame {
     view.group.rotation.x = Math.sin(time * 0.32 + state.id * 0.2) * 0.018;
     view.trajectoryProjection.update(
       !terminal && state.phase === 'playing' && state.pathProjectionActive
-        ? createTrajectoryProjectionPath(state)
+        ? createTrajectoryProjectionPath(state, this.projectorBeamSettings)
         : [],
-      time
+      time,
+      this.projectorBeamSettings
     );
     this.updatePlaneCornerHud(view, state);
     this.updatePlaneStatusHud(view, state);
@@ -1688,6 +1919,10 @@ export class BreakoutGame {
   }
 
   private planeStatusLabel(state: BreakoutoutoutRenderState): string {
+    if (this.projectorDebug) {
+      return `ANGLE ${Math.round(this.projectorDebugAngle * 180 / Math.PI)} DEG`;
+    }
+
     if (state.phase === 'ready') {
       return `READY ${Math.max(1, Math.ceil(state.readyRemaining))}s`;
     }
@@ -2456,6 +2691,50 @@ export class BreakoutGame {
 //   return texture;
 // }
 
+function createProjectorDebugBricks(): BrickSnapshot[] {
+  const bricks: BrickSnapshot[] = [];
+  let attempts = 0;
+
+  while (bricks.length < PROJECTOR_DEBUG_BRICK_COUNT && attempts < PROJECTOR_DEBUG_BRICK_COUNT * 90) {
+    attempts += 1;
+    const width = lerp(PROJECTOR_DEBUG_BRICK_MIN_WIDTH, PROJECTOR_DEBUG_BRICK_MAX_WIDTH, Math.random());
+    const height = lerp(PROJECTOR_DEBUG_BRICK_MIN_HEIGHT, PROJECTOR_DEBUG_BRICK_MAX_HEIGHT, Math.random());
+    const minX = -HALF_WIDTH + WALL_THICKNESS + width / 2 + PROJECTOR_DEBUG_BRICK_GAP;
+    const maxX = HALF_WIDTH - WALL_THICKNESS - width / 2 - PROJECTOR_DEBUG_BRICK_GAP;
+    const x = lerp(minX, maxX, Math.random());
+    const y = lerp(PROJECTOR_DEBUG_MIN_Y, PROJECTOR_DEBUG_MAX_Y, Math.random());
+    const candidate: BrickSnapshot = {
+      id: `projector-debug-${bricks.length}`,
+      row: -1,
+      col: bricks.length,
+      x,
+      y,
+      width,
+      height,
+      color: PROJECTOR_DEBUG_COLORS[Math.floor(Math.random() * PROJECTOR_DEBUG_COLORS.length)],
+      points: 0,
+      kind: 'normal',
+      hit: false
+    };
+
+    if (!overlapsProjectorDebugBrick(candidate, bricks)) {
+      bricks.push(candidate);
+    }
+  }
+
+  return bricks;
+}
+
+function overlapsProjectorDebugBrick(candidate: BrickSnapshot, bricks: readonly BrickSnapshot[]): boolean {
+  return bricks.some((brick) => {
+    const xOverlap = Math.abs(candidate.x - brick.x)
+      < (candidate.width + brick.width) / 2 + PROJECTOR_DEBUG_BRICK_GAP;
+    const yOverlap = Math.abs(candidate.y - brick.y)
+      < (candidate.height + brick.height) / 2 + PROJECTOR_DEBUG_BRICK_GAP;
+    return xOverlap && yOverlap;
+  });
+}
+
 class TrajectoryProjection {
   readonly mesh: THREE.InstancedMesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
 
@@ -2465,64 +2744,78 @@ class TrajectoryProjection {
   private readonly scale = new THREE.Vector3(1, 1, 1);
 
   constructor() {
-    const geometry = new THREE.CircleGeometry(TRAJECTORY_PROJECTION_DOT_RADIUS, 14);
+    const geometry = new THREE.CircleGeometry(1, 14);
     const material = makeFadeableMaterial(new THREE.MeshBasicMaterial({
-      color: TRAJECTORY_PROJECTION_COLOR,
+      color: PROJECTOR_BEAM_DEFAULTS.color,
       transparent: true,
-      opacity: 0.86,
+      opacity: PROJECTOR_BEAM_DEFAULTS.opacity,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       depthTest: false,
       toneMapped: false
     }));
-    this.mesh = new THREE.InstancedMesh(geometry, material, TRAJECTORY_PROJECTION_MAX_DOTS);
+    this.mesh = new THREE.InstancedMesh(geometry, material, TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT);
     this.mesh.count = 0;
     this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = TRAJECTORY_PROJECTION_RENDER_ORDER;
+    this.mesh.renderOrder = PROJECTOR_BEAM_DEFAULTS.renderOrder;
     this.mesh.visible = false;
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   }
 
-  update(points: readonly TrajectoryPoint[], time: number): void {
-    const segments = createTrajectorySegments(points);
+  update(points: readonly TrajectoryPoint[], time: number, settings: ProjectorBeamSettings): void {
+    this.applySettings(settings);
+    const segments = createTrajectorySegments(points, settings);
     const lastSegment = segments[segments.length - 1];
     const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
 
-    if (totalLength <= TRAJECTORY_PROJECTION_EPSILON) {
+    if (totalLength <= settings.epsilon) {
       this.mesh.count = 0;
       this.mesh.visible = false;
       return;
     }
 
     let dotIndex = 0;
-    let distance = positiveModulo(time * TRAJECTORY_PROJECTION_MARCH_SPEED, TRAJECTORY_PROJECTION_DOT_SPACING);
+    const dotLimit = Math.min(Math.floor(settings.maxDots), TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT);
+    let distance = positiveModulo(time * settings.marchSpeed, settings.dotSpacing);
 
-    while (distance <= totalLength && dotIndex < TRAJECTORY_PROJECTION_MAX_DOTS) {
+    while (distance <= totalLength && dotIndex < dotLimit) {
       const point = sampleTrajectorySegments(segments, distance);
-      const pulse = 0.88 + 0.16 * Math.sin(distance * 9 - time * 18);
-      this.position.set(point.x, point.y, TRAJECTORY_PROJECTION_Z);
-      this.scale.setScalar(pulse);
+      const pulse = settings.pulseBaseScale
+        + settings.pulseScaleAmplitude * Math.sin(distance * settings.pulseDistanceFrequency - time * settings.pulseTimeFrequency);
+      this.position.set(point.x, point.y, settings.z);
+      this.scale.setScalar(Math.max(0.001, settings.dotRadius * pulse));
       this.matrix.compose(this.position, this.rotation, this.scale);
       this.mesh.setMatrixAt(dotIndex, this.matrix);
 
       dotIndex += 1;
-      distance += TRAJECTORY_PROJECTION_DOT_SPACING;
+      distance += settings.dotSpacing;
     }
 
     this.mesh.count = dotIndex;
     this.mesh.visible = dotIndex > 0;
     this.mesh.instanceMatrix.needsUpdate = true;
   }
+
+  private applySettings(settings: ProjectorBeamSettings): void {
+    this.mesh.renderOrder = Math.floor(settings.renderOrder);
+    this.mesh.material.color.setHex(settings.color);
+    this.mesh.material.opacity = settings.opacity;
+    this.mesh.material.userData.baseOpacity = settings.opacity;
+  }
 }
 
-function createTrajectoryProjectionPath(state: BreakoutoutoutRenderState): TrajectoryPoint[] {
+function createTrajectoryProjectionPath(
+  state: BreakoutoutoutRenderState,
+  settings: ProjectorBeamSettings
+): TrajectoryPoint[] {
   const speed = Math.hypot(state.ball.vx, state.ball.vy);
-  if (speed <= TRAJECTORY_PROJECTION_EPSILON) {
+  if (speed <= settings.epsilon) {
     return [];
   }
 
-  let x = state.ball.x;
-  let y = state.ball.y;
+  const startPoint = clampTrajectoryPointToPlayfield(state.ball.x, state.ball.y, settings);
+  let x = startPoint.x;
+  let y = startPoint.y;
   let directionX = state.ball.vx / speed;
   let directionY = state.ball.vy / speed;
   let traveled = 0;
@@ -2536,14 +2829,14 @@ function createTrajectoryProjectionPath(state: BreakoutoutoutRenderState): Traje
       height: brick.height
     }));
 
-  for (let bounce = 0; bounce < TRAJECTORY_PROJECTION_MAX_BOUNCES; bounce += 1) {
-    const paddleDistance = distanceToPaddleY(y, directionY);
-    const hit = nearestTrajectoryHit(x, y, directionX, directionY, obstacles);
+  for (let bounce = 0; bounce < settings.maxBounces; bounce += 1) {
+    const paddleDistance = distanceToPaddleY(y, directionY, settings);
+    const hit = nearestTrajectoryHit(x, y, directionX, directionY, obstacles, settings);
 
     if (
       paddleDistance !== null
       && paddleDistance <= (hit?.distance ?? Number.POSITIVE_INFINITY)
-      && traveled + paddleDistance <= TRAJECTORY_PROJECTION_MAX_DISTANCE
+      && traveled + paddleDistance <= settings.maxDistance
     ) {
       points.push({
         x: x + directionX * paddleDistance,
@@ -2556,9 +2849,9 @@ function createTrajectoryProjectionPath(state: BreakoutoutoutRenderState): Traje
       return points.length > 1 ? points : [];
     }
 
-    const remainingDistance = TRAJECTORY_PROJECTION_MAX_DISTANCE - traveled;
+    const remainingDistance = settings.maxDistance - traveled;
     const segmentDistance = Math.min(hit.distance, remainingDistance);
-    if (segmentDistance <= TRAJECTORY_PROJECTION_EPSILON) {
+    if (segmentDistance <= settings.epsilon) {
       return points.length > 1 ? points : [];
     }
 
@@ -2569,7 +2862,7 @@ function createTrajectoryProjectionPath(state: BreakoutoutoutRenderState): Traje
     points.push(nextPoint);
     traveled += segmentDistance;
 
-    if (segmentDistance < hit.distance || traveled >= TRAJECTORY_PROJECTION_MAX_DISTANCE) {
+    if (segmentDistance < hit.distance || traveled >= settings.maxDistance) {
       return points;
     }
 
@@ -2584,20 +2877,33 @@ function createTrajectoryProjectionPath(state: BreakoutoutoutRenderState): Traje
       directionY *= -1;
     }
 
-    x = nextPoint.x + hit.normalX * TRAJECTORY_PROJECTION_EPSILON * 4;
-    y = nextPoint.y + hit.normalY * TRAJECTORY_PROJECTION_EPSILON * 4;
+    const advancedPoint = clampTrajectoryPointToPlayfield(
+      nextPoint.x + hit.normalX * settings.surfaceClearance,
+      nextPoint.y + hit.normalY * settings.surfaceClearance,
+      settings
+    );
+    x = advancedPoint.x;
+    y = advancedPoint.y;
   }
 
   return points.length > 1 ? points : [];
 }
 
-function distanceToPaddleY(y: number, directionY: number): number | null {
-  if (directionY >= -TRAJECTORY_PROJECTION_EPSILON) {
+function clampTrajectoryPointToPlayfield(x: number, y: number, settings: ProjectorBeamSettings): TrajectoryPoint {
+  const bounds = trajectoryProjectionWallBounds(settings);
+  return {
+    x: clamp(x, bounds.left, bounds.right),
+    y: Math.min(y, bounds.top)
+  };
+}
+
+function distanceToPaddleY(y: number, directionY: number, settings: ProjectorBeamSettings): number | null {
+  if (directionY >= -settings.epsilon) {
     return null;
   }
 
   const distance = (PADDLE_Y - y) / directionY;
-  return distance > TRAJECTORY_PROJECTION_EPSILON ? distance : null;
+  return distance > settings.epsilon ? distance : null;
 }
 
 function nearestTrajectoryHit(
@@ -2605,13 +2911,14 @@ function nearestTrajectoryHit(
   y: number,
   directionX: number,
   directionY: number,
-  obstacles: readonly TrajectoryObstacle[]
+  obstacles: readonly TrajectoryObstacle[],
+  settings: ProjectorBeamSettings
 ): TrajectoryHit | null {
-  let nearest = wallTrajectoryHit(x, y, directionX, directionY);
+  let nearest = wallTrajectoryHit(x, y, directionX, directionY, settings);
 
   for (let index = 0; index < obstacles.length; index += 1) {
-    const hit = rayAabbTrajectoryHit(x, y, directionX, directionY, obstacles[index]);
-    if (!hit || (nearest && hit.distance >= nearest.distance)) {
+    const hit = rayAabbTrajectoryHit(x, y, directionX, directionY, obstacles[index], settings);
+    if (!hit || (nearest && hit.distance >= nearest.distance - settings.cornerTolerance)) {
       continue;
     }
 
@@ -2624,44 +2931,69 @@ function nearestTrajectoryHit(
   return nearest;
 }
 
-function wallTrajectoryHit(x: number, y: number, directionX: number, directionY: number): TrajectoryHit | null {
+function wallTrajectoryHit(
+  x: number,
+  y: number,
+  directionX: number,
+  directionY: number,
+  settings: ProjectorBeamSettings
+): TrajectoryHit | null {
   let nearest: TrajectoryHit | null = null;
-  const left = -HALF_WIDTH + BALL_RADIUS;
-  const right = HALF_WIDTH - BALL_RADIUS;
-  const top = HALF_HEIGHT - BALL_RADIUS;
+  const bounds = trajectoryProjectionWallBounds(settings);
 
-  if (directionX < -TRAJECTORY_PROJECTION_EPSILON) {
-    nearest = nearerTrajectoryHit(nearest, {
-      distance: (left - x) / directionX,
+  if (directionX < -settings.epsilon) {
+    nearest = mergeTrajectoryHit(nearest, {
+      distance: (bounds.left - x) / directionX,
       normalX: 1,
       normalY: 0
-    });
-  } else if (directionX > TRAJECTORY_PROJECTION_EPSILON) {
-    nearest = nearerTrajectoryHit(nearest, {
-      distance: (right - x) / directionX,
+    }, settings);
+  } else if (directionX > settings.epsilon) {
+    nearest = mergeTrajectoryHit(nearest, {
+      distance: (bounds.right - x) / directionX,
       normalX: -1,
       normalY: 0
-    });
+    }, settings);
   }
 
-  if (directionY > TRAJECTORY_PROJECTION_EPSILON) {
-    nearest = nearerTrajectoryHit(nearest, {
-      distance: (top - y) / directionY,
+  if (directionY > settings.epsilon) {
+    nearest = mergeTrajectoryHit(nearest, {
+      distance: (bounds.top - y) / directionY,
       normalX: 0,
       normalY: -1
-    });
+    }, settings);
   }
 
   return nearest;
 }
 
-function nearerTrajectoryHit(current: TrajectoryHit | null, candidate: TrajectoryHit): TrajectoryHit | null {
-  if (candidate.distance <= TRAJECTORY_PROJECTION_EPSILON) {
+function trajectoryProjectionWallBounds(settings: ProjectorBeamSettings): { left: number; right: number; top: number } {
+  return {
+    left: -HALF_WIDTH + BALL_RADIUS + settings.wallGuard,
+    right: HALF_WIDTH - BALL_RADIUS - settings.wallGuard,
+    top: HALF_HEIGHT - BALL_RADIUS - settings.wallGuard
+  };
+}
+
+function mergeTrajectoryHit(
+  current: TrajectoryHit | null,
+  candidate: TrajectoryHit,
+  settings: ProjectorBeamSettings
+): TrajectoryHit | null {
+  if (candidate.distance <= settings.epsilon) {
     return current;
   }
 
-  if (!current || candidate.distance < current.distance) {
+  if (!current || candidate.distance < current.distance - settings.cornerTolerance) {
     return candidate;
+  }
+
+  if (Math.abs(candidate.distance - current.distance) <= settings.cornerTolerance) {
+    return {
+      distance: Math.min(current.distance, candidate.distance),
+      normalX: current.normalX || candidate.normalX,
+      normalY: current.normalY || candidate.normalY,
+      brickIndex: current.brickIndex ?? candidate.brickIndex
+    };
   }
 
   return current;
@@ -2672,7 +3004,8 @@ function rayAabbTrajectoryHit(
   y: number,
   directionX: number,
   directionY: number,
-  obstacle: TrajectoryObstacle
+  obstacle: TrajectoryObstacle,
+  settings: ProjectorBeamSettings
 ): TrajectoryHit | null {
   const minX = obstacle.x - obstacle.width / 2 - BALL_RADIUS;
   const maxX = obstacle.x + obstacle.width / 2 + BALL_RADIUS;
@@ -2683,7 +3016,7 @@ function rayAabbTrajectoryHit(
   let normalX = 0;
   let normalY = 0;
 
-  if (Math.abs(directionX) <= TRAJECTORY_PROJECTION_EPSILON) {
+  if (Math.abs(directionX) <= settings.epsilon) {
     if (x < minX || x > maxX) {
       return null;
     }
@@ -2692,15 +3025,17 @@ function rayAabbTrajectoryHit(
     const farX = (maxX - x) / directionX;
     const xEntry = Math.min(nearX, farX);
     const xExit = Math.max(nearX, farX);
-    if (xEntry > entryDistance) {
+    if (xEntry > entryDistance + settings.cornerTolerance) {
       entryDistance = xEntry;
       normalX = nearX > farX ? 1 : -1;
       normalY = 0;
+    } else if (Math.abs(xEntry - entryDistance) <= settings.cornerTolerance) {
+      normalX = nearX > farX ? 1 : -1;
     }
     exitDistance = Math.min(exitDistance, xExit);
   }
 
-  if (Math.abs(directionY) <= TRAJECTORY_PROJECTION_EPSILON) {
+  if (Math.abs(directionY) <= settings.epsilon) {
     if (y < minY || y > maxY) {
       return null;
     }
@@ -2709,19 +3044,21 @@ function rayAabbTrajectoryHit(
     const farY = (maxY - y) / directionY;
     const yEntry = Math.min(nearY, farY);
     const yExit = Math.max(nearY, farY);
-    if (yEntry > entryDistance) {
+    if (yEntry > entryDistance + settings.cornerTolerance) {
       entryDistance = yEntry;
       normalX = 0;
+      normalY = nearY > farY ? 1 : -1;
+    } else if (Math.abs(yEntry - entryDistance) <= settings.cornerTolerance) {
       normalY = nearY > farY ? 1 : -1;
     }
     exitDistance = Math.min(exitDistance, yExit);
   }
 
-  if (entryDistance > exitDistance || exitDistance <= TRAJECTORY_PROJECTION_EPSILON) {
+  if (entryDistance > exitDistance || exitDistance <= settings.epsilon) {
     return null;
   }
 
-  if (entryDistance <= TRAJECTORY_PROJECTION_EPSILON) {
+  if (entryDistance <= settings.epsilon) {
     return null;
   }
 
@@ -2732,7 +3069,10 @@ function rayAabbTrajectoryHit(
   };
 }
 
-function createTrajectorySegments(points: readonly TrajectoryPoint[]): TrajectorySegment[] {
+function createTrajectorySegments(
+  points: readonly TrajectoryPoint[],
+  settings: ProjectorBeamSettings
+): TrajectorySegment[] {
   const segments: TrajectorySegment[] = [];
   let distanceStart = 0;
 
@@ -2740,7 +3080,7 @@ function createTrajectorySegments(points: readonly TrajectoryPoint[]): Trajector
     const start = points[index - 1];
     const end = points[index];
     const length = Math.hypot(end.x - start.x, end.y - start.y);
-    if (length <= TRAJECTORY_PROJECTION_EPSILON) {
+    if (length <= settings.epsilon) {
       continue;
     }
 
@@ -2766,6 +3106,217 @@ function sampleTrajectorySegments(segments: readonly TrajectorySegment[], distan
 
   const fallback = segments[segments.length - 1]?.end;
   return fallback ? { ...fallback } : { x: 0, y: 0 };
+}
+
+type ProjectorBeamPanelOptions = {
+  settings: ProjectorBeamSettings;
+  onNumericChange: (key: ProjectorBeamNumericSettingKey, value: number) => void;
+  onColorChange: (color: number) => void;
+  onReset: () => void;
+};
+
+type ProjectorBeamControlElements = {
+  range: HTMLInputElement;
+  numeric: HTMLInputElement;
+  value: HTMLSpanElement;
+};
+
+class ProjectorBeamPanel {
+  readonly element: HTMLDivElement;
+
+  private readonly body: HTMLDivElement;
+  private readonly toggleButton: HTMLButtonElement;
+  private readonly colorInput: HTMLInputElement;
+  private readonly colorValue: HTMLSpanElement;
+  private readonly status: HTMLSpanElement;
+  private readonly controls = new Map<ProjectorBeamNumericSettingKey, ProjectorBeamControlElements>();
+  private readonly options: ProjectorBeamPanelOptions;
+  private expanded = false;
+
+  constructor(root: HTMLElement, options: ProjectorBeamPanelOptions) {
+    this.options = options;
+    this.element = document.createElement('div');
+    this.element.className = 'post-processing-panel projector-beam-panel is-collapsed';
+    this.element.addEventListener('keydown', stopEventPropagation);
+    this.element.addEventListener('keyup', stopEventPropagation);
+    this.element.addEventListener('pointerdown', stopEventPropagation);
+    this.element.addEventListener('pointermove', stopEventPropagation);
+    this.element.addEventListener('pointerup', stopEventPropagation);
+    this.element.addEventListener('pointercancel', stopEventPropagation);
+
+    this.toggleButton = document.createElement('button');
+    this.toggleButton.type = 'button';
+    this.toggleButton.className = 'post-processing-panel__toggle';
+    this.toggleButton.textContent = 'Beam';
+    this.toggleButton.setAttribute('aria-expanded', 'false');
+    this.toggleButton.addEventListener('click', () => this.setExpanded(!this.expanded));
+
+    this.body = document.createElement('div');
+    this.body.className = 'post-processing-panel__body';
+    this.body.hidden = true;
+
+    const header = document.createElement('div');
+    header.className = 'post-processing-panel__header';
+    const title = document.createElement('h2');
+    title.textContent = 'Projector Beam';
+    const actions = document.createElement('div');
+    actions.className = 'post-processing-panel__actions';
+    const resetButton = this.createActionButton('Reset');
+    resetButton.addEventListener('click', () => {
+      this.options.onReset();
+      this.status.textContent = 'Reset';
+    });
+    actions.append(resetButton);
+    header.append(title, actions);
+    this.body.append(header);
+
+    const form = document.createElement('div');
+    form.className = 'post-processing-panel__controls';
+    const colorControl = this.createColorControl(options.settings.color);
+    this.colorInput = colorControl.input;
+    this.colorValue = colorControl.value;
+    form.append(colorControl.field);
+    for (const control of PROJECTOR_BEAM_CONTROLS) {
+      form.append(this.createNumericControl(control, options.settings[control.key]));
+    }
+    this.status = document.createElement('span');
+    this.status.className = 'post-processing-panel__status';
+    form.append(this.status);
+    this.body.append(form);
+
+    this.element.append(this.toggleButton, this.body);
+    root.appendChild(this.element);
+  }
+
+  setSettings(settings: ProjectorBeamSettings): void {
+    this.setColor(settings.color);
+    for (const control of PROJECTOR_BEAM_CONTROLS) {
+      this.setValue(control.key, settings[control.key]);
+    }
+  }
+
+  setColor(color: number): void {
+    const formattedColor = formatHexColor(color);
+    this.colorInput.value = formattedColor;
+    this.colorValue.textContent = formattedColor.toUpperCase();
+  }
+
+  setValue(key: ProjectorBeamNumericSettingKey, value: number): void {
+    const elements = this.controls.get(key);
+    const control = projectorBeamControlDefinitionForKey(key);
+    if (!elements || !control) {
+      return;
+    }
+
+    const formattedValue = formatControlValue(value, control.decimals);
+    elements.range.value = String(value);
+    elements.numeric.value = formattedValue;
+    elements.value.textContent = formattedValue;
+  }
+
+  private createColorControl(color: number): {
+    field: HTMLLabelElement;
+    input: HTMLInputElement;
+    value: HTMLSpanElement;
+  } {
+    const field = document.createElement('label');
+    field.className = 'post-processing-panel__control projector-beam-panel__color-control';
+
+    const labelRow = document.createElement('span');
+    labelRow.className = 'post-processing-panel__label-row';
+    const label = document.createElement('span');
+    label.textContent = 'Color';
+    const valueDisplay = document.createElement('span');
+    valueDisplay.className = 'post-processing-panel__value';
+    valueDisplay.textContent = formatHexColor(color).toUpperCase();
+    labelRow.append(label, valueDisplay);
+
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.value = formatHexColor(color);
+    input.setAttribute('aria-label', 'Projector beam color');
+    input.addEventListener('input', () => {
+      const parsedColor = parseHexColor(input.value);
+      if (parsedColor === null) {
+        return;
+      }
+
+      this.options.onColorChange(parsedColor);
+      this.status.textContent = '';
+    });
+
+    field.append(labelRow, input);
+    return { field, input, value: valueDisplay };
+  }
+
+  private createNumericControl(control: ProjectorBeamControlDefinition, value: number): HTMLLabelElement {
+    const field = document.createElement('label');
+    field.className = 'post-processing-panel__control';
+
+    const labelRow = document.createElement('span');
+    labelRow.className = 'post-processing-panel__label-row';
+    const label = document.createElement('span');
+    label.textContent = control.label;
+    const valueDisplay = document.createElement('span');
+    valueDisplay.className = 'post-processing-panel__value';
+    valueDisplay.textContent = formatControlValue(value, control.decimals);
+    labelRow.append(label, valueDisplay);
+
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.min = String(control.min);
+    range.max = String(control.max);
+    range.step = String(control.step);
+    range.value = String(value);
+    range.setAttribute('aria-label', `${control.label} slider`);
+    range.addEventListener('input', () => this.changeValue(control, range.valueAsNumber));
+
+    const numeric = document.createElement('input');
+    numeric.type = 'number';
+    numeric.min = String(control.min);
+    numeric.max = String(control.max);
+    numeric.step = String(control.step);
+    numeric.value = formatControlValue(value, control.decimals);
+    numeric.setAttribute('aria-label', `${control.label} value`);
+    numeric.addEventListener('input', () => this.changeValue(control, numeric.valueAsNumber));
+    numeric.addEventListener('blur', () => {
+      const current = normalizeProjectorBeamValue(control.key, this.options.settings[control.key]);
+      this.setValue(control.key, current);
+    });
+
+    this.controls.set(control.key, {
+      range,
+      numeric,
+      value: valueDisplay
+    });
+
+    field.append(labelRow, range, numeric);
+    return field;
+  }
+
+  private changeValue(control: ProjectorBeamControlDefinition, value: number): void {
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    this.options.onNumericChange(control.key, value);
+    this.status.textContent = '';
+  }
+
+  private createActionButton(label: string): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    return button;
+  }
+
+  private setExpanded(expanded: boolean): void {
+    this.expanded = expanded;
+    this.body.hidden = !expanded;
+    this.element.classList.toggle('is-collapsed', !expanded);
+    this.toggleButton.textContent = expanded ? 'Hide Beam' : 'Beam';
+    this.toggleButton.setAttribute('aria-expanded', String(expanded));
+  }
 }
 
 type PostProcessingPanelOptions = {
@@ -3317,6 +3868,48 @@ function normalizePostProcessingValue(key: PostProcessingSettingKey, value: numb
   }
 
   return Number(clamped.toFixed(Math.min(decimals + 2, 8)));
+}
+
+function projectorBeamControlDefinitionForKey(
+  key: ProjectorBeamNumericSettingKey
+): ProjectorBeamControlDefinition | undefined {
+  return PROJECTOR_BEAM_CONTROLS.find((control) => control.key === key);
+}
+
+function normalizeProjectorBeamValue(key: ProjectorBeamNumericSettingKey, value: number): number {
+  const control = projectorBeamControlDefinitionForKey(key);
+  const min = control?.min ?? Number.NEGATIVE_INFINITY;
+  const max = control?.max ?? Number.POSITIVE_INFINITY;
+  const decimals = control?.decimals ?? 6;
+  const fallback = PROJECTOR_BEAM_DEFAULTS[key];
+  const clamped = clamp(Number.isFinite(value) ? value : fallback, min, max);
+
+  if (decimals === 0) {
+    return Math.round(clamped);
+  }
+
+  return Number(clamped.toFixed(Math.min(decimals + 2, 8)));
+}
+
+function normalizeProjectorBeamColor(color: number): number {
+  if (!Number.isFinite(color)) {
+    return PROJECTOR_BEAM_DEFAULTS.color;
+  }
+
+  return clamp(Math.round(color), 0x000000, 0xffffff);
+}
+
+function formatHexColor(color: number): string {
+  return `#${normalizeProjectorBeamColor(color).toString(16).padStart(6, '0')}`;
+}
+
+function parseHexColor(value: string): number | null {
+  const normalizedValue = value.trim();
+  if (!/^#[\da-f]{6}$/i.test(normalizedValue)) {
+    return null;
+  }
+
+  return Number.parseInt(normalizedValue.slice(1), 16);
 }
 
 function formatPostProcessingSettings(settings: PostProcessingSettings): string {

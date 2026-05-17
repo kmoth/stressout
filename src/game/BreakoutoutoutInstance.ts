@@ -956,6 +956,7 @@ function createSplitBonusBricks(
   const kinds: BrickKind[] = specialBrickKinds.has('splitter')
     ? ['splitter', 'normal', 'normal']
     : ['normal', 'normal', 'normal'];
+  const activeSpecialKinds = getActiveSpecialBrickKinds(existingBricks);
 
   for (let index = 0; index < kinds.length; index += 1) {
     const kind = kinds[index];
@@ -978,9 +979,70 @@ function createSplitBonusBricks(
           random
         });
     additions.push(placed);
+    if (isSpecialBrickKind(placed.kind)) {
+      activeSpecialKinds.add(placed.kind);
+    }
+  }
+
+  for (const kind of SPECIAL_BRICK_KINDS) {
+    if (!specialBrickKinds.has(kind) || activeSpecialKinds.has(kind)) {
+      continue;
+    }
+
+    const placed = placeSpecialBonusBrick({
+      id: `split-special-${existingBricks.length}-${kind}`,
+      kind,
+      width: brickWidth,
+      height: BRICK_HEIGHT,
+      existingBricks: [...existingBricks, ...additions],
+      carriedBall,
+      random
+    });
+    additions.push(placed);
+    activeSpecialKinds.add(kind);
   }
 
   return additions;
+}
+
+function getActiveSpecialBrickKinds(bricks: readonly BrickSnapshot[]): Set<SpecialBrickKind> {
+  const kinds = new Set<SpecialBrickKind>();
+
+  for (const brick of bricks) {
+    if (!brick.hit && isSpecialBrickKind(brick.kind)) {
+      kinds.add(brick.kind);
+    }
+  }
+
+  return kinds;
+}
+
+function isSpecialBrickKind(kind: BrickKind): kind is SpecialBrickKind {
+  return kind !== 'normal';
+}
+
+function placeSpecialBonusBrick(options: {
+  id: string;
+  kind: SpecialBrickKind;
+  width: number;
+  height: number;
+  existingBricks: BrickSnapshot[];
+  carriedBall: BallSnapshot;
+  random: () => number;
+}): BrickSnapshot {
+  if (options.kind === 'splitter') {
+    return placeSplitBonusBrick(options);
+  }
+
+  return placeBonusBrick({
+    id: options.id,
+    kind: options.kind,
+    width: options.width,
+    height: options.height,
+    color: getSpecialBrickColor(options.kind),
+    existingBricks: options.existingBricks,
+    random: options.random
+  });
 }
 
 function placeSplitBonusBrick(options: {
@@ -1168,6 +1230,22 @@ function getBrickColor(kind: BrickKind, row: number, palette: number[]): number 
   }
 
   return palette[row % palette.length];
+}
+
+function getSpecialBrickColor(kind: SpecialBrickKind): number {
+  if (kind === 'splitter') {
+    return SPLITTER_COLOR;
+  }
+
+  if (kind === 'autopilot') {
+    return AUTOPILOT_COLOR;
+  }
+
+  if (kind === 'life') {
+    return LIFE_COLOR;
+  }
+
+  return PROJECTOR_COLOR;
 }
 
 function getBrickPoints(kind: BrickKind, row: number): number {

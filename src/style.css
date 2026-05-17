@@ -80,6 +80,10 @@ textarea {
   width: auto;
 }
 
+.projector-beam-panel {
+  top: 3.55rem;
+}
+
 .post-processing-panel__toggle,
 .post-processing-panel button {
   border: 1px solid rgba(244, 249, 248, 0.2);
@@ -179,6 +183,20 @@ textarea {
 .post-processing-panel input[type="range"] {
   width: 100%;
   accent-color: #2dd4bf;
+}
+
+.post-processing-panel input[type="color"] {
+  width: 100%;
+  min-height: 1.9rem;
+  padding: 0.1rem;
+  border: 1px solid rgba(244, 249, 248, 0.16);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.055);
+  cursor: pointer;
+}
+
+.projector-beam-panel__color-control {
+  grid-template-columns: 1fr;
 }
 
 .post-processing-panel input[type="number"],
