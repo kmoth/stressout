@@ -72,6 +72,7 @@ const MAX_DT = 1 / 20;
 const PLANE_Z_GAP = 5;
 const DEFAULT_INITIAL_INSTANCE_COUNT = 1;
 const MAX_INITIAL_INSTANCE_COUNT = 24;
+const MAIN_MENU_DEMO_INSTANCE_COUNT = 6;
 const SPLIT_GAME_SPEED_TWEEN_DURATION = 0.55;
 const SPLIT_PLANE_TRAVEL_DURATION = 0.82;
 const SPLIT_PLANE_SPAWN_Z_OFFSET = 0.36;
@@ -183,6 +184,23 @@ const PLANE_SCORE_WORLD_HEIGHT = 0.84;
 const PLANE_SCORE_MAX_WIDTH = 9.6;
 const PLANE_HEART_WORLD_HEIGHT = 0.68;
 const PLANE_HEART_MAX_WIDTH = 7.6;
+const MAIN_MENU_RENDER_ORDER = 120;
+const MAIN_MENU_CAMERA_DISTANCE = 18.5;
+const MAIN_MENU_TITLE_WORLD_HEIGHT = 1.2;
+const MAIN_MENU_TITLE_MAX_WIDTH = 9.6;
+const MAIN_MENU_TITLE_Y = 1.52;
+const MAIN_MENU_SUBTITLE_WORLD_HEIGHT = 0.42;
+const MAIN_MENU_SUBTITLE_MAX_WIDTH = 6.8;
+const MAIN_MENU_SUBTITLE_Y = 0.62;
+const MAIN_MENU_BUTTON_WORLD_HEIGHT = 1.02;
+const MAIN_MENU_BUTTON_MAX_WIDTH = 5.35;
+const MAIN_MENU_START_BUTTON_Y = -0.68;
+const MAIN_MENU_BUTTON_Z = 0.18;
+const SPLIT_TUTORIAL_STORAGE_KEY = 'breakoutoutout.splitTutorialSeen';
+const SPLIT_TUTORIAL_DURATION = 5;
+const SPLIT_TUTORIAL_WORLD_HEIGHT = 1.18;
+const SPLIT_TUTORIAL_MAX_WIDTH = 8.8;
+const SPLIT_TUTORIAL_Z_OFFSET = 1.1;
 // Change this value to tune the visual z-thickness of the playfield box meshes.
 const PLAYFIELD_MESH_DEPTH = PLAYFIELD_DEPTH;
 const PLAYFIELD_MESH_DEPTH_BASELINE = 0.55;
@@ -425,6 +443,10 @@ type InstanceSelection = {
   trackOffset: number;
 };
 
+type MainMenuAction = 'start';
+
+type SplitTutorialMode = 'keyboard' | 'touch';
+
 type InstanceView = {
   instance: BreakoutoutoutInstance;
   group: THREE.Group;
@@ -467,6 +489,8 @@ export class BreakoutGame {
   private readonly postProcessingUniforms: PostProcessingUniforms;
   private readonly postProcessingPanel: PostProcessingPanel;
   private readonly projectorBeamPanel: ProjectorBeamPanel | null = null;
+  private readonly mainMenu: MainMenuView;
+  private readonly splitTutorial = new SplitTutorialView(MAIN_MENU_RENDER_ORDER + 6);
   private readonly stats = new Stats();
   private readonly sound = new SoundBank();
   private readonly keys = new Set<string>();
@@ -514,6 +538,12 @@ export class BreakoutGame {
   private splitSequenceActive = false;
   private fatalMissInstance: BreakoutoutoutInstance | null = null;
   private totalGameOver = false;
+  private gameStarted = false;
+  private hoveredMenuAction: MainMenuAction | null = null;
+  private pressedMenuAction: MainMenuAction | null = null;
+  private splitTutorialActive = false;
+  private splitTutorialElapsed = 0;
+  private splitTutorialSeen = getSplitTutorialSeenFlag();
   private cameraBaseDistance = 24;
   private cameraDistance = 24;
   private cameraFocusX = 0;
@@ -549,6 +579,7 @@ export class BreakoutGame {
       sandbox: options.sandbox ?? false,
       specialBrickKinds: options.specialBrickKinds
     };
+    this.gameStarted = this.autopilot || this.projectorDebug;
     this.shell = document.createElement('div');
     this.shell.className = 'game-shell';
     root.replaceChildren(this.shell);
@@ -586,6 +617,10 @@ export class BreakoutGame {
 
     // this.particleTexture = createParticleTexture();
     this.createLighting();
+    this.mainMenu = new MainMenuView();
+    this.mainMenu.setVisible(!this.gameStarted);
+    this.scene.add(this.mainMenu.group);
+    this.scene.add(this.splitTutorial.mesh);
     this.attachInput();
     this.resize();
   }
@@ -707,13 +742,41 @@ export class BreakoutGame {
     const game = new BreakoutGame(root, options);
     await game.renderer.init();
     game.createNebulaSystem();
-    for (let index = 0; index < game.initialInstanceCount; index += 1) {
-      const snapshot = game.projectorDebug ? game.createProjectorDebugSnapshot() : undefined;
-      game.addInstance(new BreakoutoutoutInstance(game.nextInstanceId, snapshot, game.instanceOptions));
-      game.nextInstanceId += 1;
-    }
+    game.populateInitialInstances();
     requestAnimationFrame(game.tick);
     return game;
+  }
+
+  private populateInitialInstances(): void {
+    if (this.isMainMenuActive) {
+      this.populateInstances(MAIN_MENU_DEMO_INSTANCE_COUNT, this.createMainMenuDemoOptions(), true);
+      return;
+    }
+
+    this.populateInstances(this.initialInstanceCount, this.instanceOptions);
+  }
+
+  private populateInstances(
+    count: number,
+    options: BreakoutoutoutOptions,
+    launchImmediately = false
+  ): void {
+    for (let index = 0; index < count; index += 1) {
+      const snapshot = this.projectorDebug ? this.createProjectorDebugSnapshot() : undefined;
+      const instance = new BreakoutoutoutInstance(this.nextInstanceId, snapshot, options);
+      if (launchImmediately && !this.projectorDebug) {
+        instance.launchOrAdvance();
+      }
+      this.addInstance(instance);
+      this.nextInstanceId += 1;
+    }
+  }
+
+  private createMainMenuDemoOptions(): BreakoutoutoutOptions {
+    return {
+      ...this.instanceOptions,
+      autopilot: true
+    };
   }
 
   private createNebulaSystem(): void {
@@ -1006,6 +1069,28 @@ export class BreakoutGame {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (this.splitTutorialActive) {
+      if (isGameControlKey(event.code)) {
+        event.preventDefault();
+      }
+      return;
+    }
+
+    if (this.isMainMenuActive) {
+      if (event.code === 'Space' || event.code === 'Enter') {
+        event.preventDefault();
+        if (!event.repeat) {
+          this.startGameFromMenu();
+        }
+        return;
+      }
+
+      if (isGameControlKey(event.code)) {
+        event.preventDefault();
+      }
+      return;
+    }
+
     if (this.projectorDebug && (event.code === 'ArrowLeft' || event.code === 'ArrowRight')) {
       event.preventDefault();
       this.keys.add(event.code);
@@ -1065,6 +1150,21 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (this.splitTutorialActive) {
+      event.preventDefault();
+      this.completeSplitTutorial();
+      return;
+    }
+
+    if (this.isMainMenuActive) {
+      event.preventDefault();
+      const action = this.menuActionAtPointer(event.clientX, event.clientY);
+      this.setHoveredMenuAction(action);
+      this.setPressedMenuAction(action);
+      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      return;
+    }
+
     if (this.totalGameOver) {
       if (this.isRestartButtonHit(event.clientX, event.clientY)) {
         event.preventDefault();
@@ -1087,6 +1187,11 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
+    if (this.isMainMenuActive) {
+      this.updateMainMenuCursor(event.clientX, event.clientY);
+      return;
+    }
+
     if (this.totalGameOver) {
       this.updateRestartButtonCursor(event.clientX, event.clientY);
       return;
@@ -1103,6 +1208,19 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
+    if (this.isMainMenuActive) {
+      event.preventDefault();
+      const action = this.menuActionAtPointer(event.clientX, event.clientY);
+      const pressedAction = this.pressedMenuAction;
+      this.setHoveredMenuAction(action);
+      this.setPressedMenuAction(null);
+      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      if (action && action === pressedAction) {
+        this.handleMainMenuAction(action);
+      }
+      return;
+    }
+
     if (this.totalGameOver) {
       if (this.isRestartButtonHit(event.clientX, event.clientY)) {
         event.preventDefault();
@@ -1125,6 +1243,12 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerCancel = (event: PointerEvent): void => {
+    if (this.isMainMenuActive) {
+      event.preventDefault();
+      this.setPressedMenuAction(null);
+      return;
+    }
+
     if (event.pointerId !== this.activeTouchPointerId) {
       return;
     }
@@ -1134,12 +1258,64 @@ export class BreakoutGame {
     this.clearTouchInput();
   };
 
+  private handleMainMenuAction(action: MainMenuAction): void {
+    if (action === 'start') {
+      this.startGameFromMenu();
+    }
+  }
+
+  private startGameFromMenu(): void {
+    if (this.gameStarted) {
+      return;
+    }
+
+    this.gameStarted = true;
+    this.setHoveredMenuAction(null);
+    this.setPressedMenuAction(null);
+    this.mainMenu.setVisible(false);
+    this.resetGame(this.initialInstanceCount, this.instanceOptions);
+  }
+
+  private updateMainMenuCursor(clientX: number, clientY: number): void {
+    const action = this.menuActionAtPointer(clientX, clientY);
+    this.setHoveredMenuAction(action);
+    this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+  }
+
+  private menuActionAtPointer(clientX: number, clientY: number): MainMenuAction | null {
+    if (!this.isMainMenuActive || !this.updatePointerRay(clientX, clientY)) {
+      return null;
+    }
+
+    const hit = this.pointerRaycaster.intersectObjects(this.mainMenu.buttonMeshes, false)[0];
+    const action = hit?.object.userData.menuAction;
+    return isMainMenuAction(action) ? action : null;
+  }
+
+  private setHoveredMenuAction(action: MainMenuAction | null): void {
+    if (this.hoveredMenuAction === action) {
+      return;
+    }
+
+    this.hoveredMenuAction = action;
+    this.mainMenu.setHoveredAction(action);
+  }
+
+  private setPressedMenuAction(action: MainMenuAction | null): void {
+    if (this.pressedMenuAction === action) {
+      return;
+    }
+
+    this.pressedMenuAction = action;
+    this.mainMenu.setPressedAction(action);
+  }
+
   private isTouchPointer(event: PointerEvent): boolean {
     return event.pointerType === 'touch' || event.pointerType === 'pen';
   }
 
   private updateTouchPaddle(clientX: number, clientY: number): void {
-    if (this.autopilot || this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.autopilot || this.totalGameOver || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -1205,7 +1381,7 @@ export class BreakoutGame {
   }
 
   private handleTouchGestureEnd(): void {
-    if (this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.totalGameOver || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -1289,6 +1465,7 @@ export class BreakoutGame {
     this.updateInstanceOpacityTweens(delta);
     this.updateBallSpeedMultiplierTweens(delta);
     this.updateSplitBloom(delta);
+    this.updateSplitTutorial(delta);
 
     if (this.projectorDebug) {
       this.updateProjectorDebug(delta);
@@ -1304,7 +1481,7 @@ export class BreakoutGame {
             continue;
           }
 
-          const allowPaddleInput = !this.totalGameOver && !fatalSequenceInstance;
+          const allowPaddleInput = this.gameStarted && !this.totalGameOver && !fatalSequenceInstance;
           const input = allowPaddleInput && !this.autopilot && index === this.selectedIndex && instance.isActive()
             ? this.currentInput
             : IDLE_INPUT;
@@ -1313,12 +1490,18 @@ export class BreakoutGame {
         this.accumulator -= FIXED_STEP;
       }
 
-      this.maybeSelectAutopilotPaddleThreat(time / 1000);
+      if (this.gameStarted) {
+        this.maybeSelectAutopilotPaddleThreat(time / 1000);
+      } else if (this.shouldRestartMainMenuDemo()) {
+        this.restartMainMenuDemo();
+      }
     }
 
     this.syncViews(time / 1000);
     this.updateCamera(delta);
+    this.mainMenu.update(time / 1000, this.camera, MAIN_MENU_CAMERA_DISTANCE);
     this.updatePlaneHudBillboards();
+    this.updateSplitTutorialBillboard();
     this.nebula?.system.update(delta);
     this.renderPipeline.render();
     this.stats.end();
@@ -1326,7 +1509,7 @@ export class BreakoutGame {
   };
 
   private launchOrAdvanceSelected(): void {
-    if (this.splitSequenceActive || this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.splitSequenceActive || this.totalGameOver || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -1339,7 +1522,7 @@ export class BreakoutGame {
   }
 
   private restartSelected(): void {
-    if (this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.totalGameOver || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -1350,6 +1533,32 @@ export class BreakoutGame {
   }
 
   private restartGame(): void {
+    this.resetGame(this.initialInstanceCount, this.instanceOptions);
+  }
+
+  private restartMainMenuDemo(): void {
+    if (!this.isMainMenuActive) {
+      return;
+    }
+
+    this.resetGame(0, this.createMainMenuDemoOptions());
+    this.populateInstances(MAIN_MENU_DEMO_INSTANCE_COUNT, this.createMainMenuDemoOptions(), true);
+    this.mainMenu.setVisible(true);
+  }
+
+  private shouldRestartMainMenuDemo(): boolean {
+    if (!this.isMainMenuActive) {
+      return false;
+    }
+
+    if (this.instances.length === 0 || this.totalGameOver) {
+      return true;
+    }
+
+    return this.instances.some((instance) => isTerminalPhase(instance.getRenderState().phase));
+  }
+
+  private resetGame(instanceCount: number, options: BreakoutoutoutOptions): void {
     this.clearTouchInput();
     this.keys.clear();
     this.pendingSplits.length = 0;
@@ -1381,16 +1590,17 @@ export class BreakoutGame {
     this.splitSequenceActive = false;
     this.fatalMissInstance = null;
     this.totalGameOver = false;
+    this.splitTutorialActive = false;
+    this.splitTutorialElapsed = 0;
+    this.splitTutorial.setVisible(false);
     this.renderer.domElement.style.cursor = '';
     this.cameraFocusX = 0;
     this.cameraFocusY = CAMERA_ELEVATION;
     this.cameraFocusZ = 0;
     this.cameraPlaneTransition = null;
 
-    for (let index = 0; index < this.initialInstanceCount; index += 1) {
-      const snapshot = this.projectorDebug ? this.createProjectorDebugSnapshot() : undefined;
-      this.addInstance(new BreakoutoutoutInstance(this.nextInstanceId, snapshot, this.instanceOptions));
-      this.nextInstanceId += 1;
+    if (instanceCount > 0) {
+      this.populateInstances(instanceCount, options);
     }
   }
 
@@ -1772,11 +1982,72 @@ export class BreakoutGame {
         this.selectInstance(this.instances.indexOf(instanceToSelect));
       }
 
-      this.tweenGameSpeed(1, SPLIT_GAME_SPEED_TWEEN_DURATION, () => {
-        this.splitSequenceActive = false;
-        this.startNextSplitSequence();
-      });
+      this.resumeAfterSplitTravel();
     }
+  }
+
+  private resumeAfterSplitTravel(): void {
+    if (this.shouldShowSplitTutorial()) {
+      this.showSplitTutorial();
+      return;
+    }
+
+    this.resumeSplitSequence();
+  }
+
+  private shouldShowSplitTutorial(): boolean {
+    if (!this.gameStarted || this.splitTutorialActive) {
+      return false;
+    }
+
+    if (this.splitTutorialSeen || getSplitTutorialSeenFlag()) {
+      this.splitTutorialSeen = true;
+      return false;
+    }
+
+    return true;
+  }
+
+  private showSplitTutorial(): void {
+    this.splitTutorialActive = true;
+    this.splitTutorialElapsed = 0;
+    this.gameSpeedTween = null;
+    this.setGameSpeed(0);
+    this.clearTouchInput();
+    this.keys.clear();
+    this.splitTutorial.setMode(isTouchTutorialDevice() ? 'touch' : 'keyboard');
+    this.splitTutorial.setVisible(true);
+  }
+
+  private updateSplitTutorial(delta: number): void {
+    if (!this.splitTutorialActive) {
+      return;
+    }
+
+    this.splitTutorialElapsed += Math.max(delta, 0);
+    if (this.splitTutorialElapsed >= SPLIT_TUTORIAL_DURATION) {
+      this.completeSplitTutorial();
+    }
+  }
+
+  private completeSplitTutorial(): void {
+    if (!this.splitTutorialActive) {
+      return;
+    }
+
+    this.splitTutorialActive = false;
+    this.splitTutorialElapsed = 0;
+    this.splitTutorial.setVisible(false);
+    this.splitTutorialSeen = true;
+    setSplitTutorialSeenFlag();
+    this.resumeSplitSequence();
+  }
+
+  private resumeSplitSequence(): void {
+    this.tweenGameSpeed(1, SPLIT_GAME_SPEED_TWEEN_DURATION, () => {
+      this.splitSequenceActive = false;
+      this.startNextSplitSequence();
+    });
   }
 
   private triggerSplitBloom(instance: BreakoutoutoutInstance, strength: number): void {
@@ -2092,7 +2363,7 @@ export class BreakoutGame {
     const topEdge = HALF_HEIGHT + WALL_THICKNESS;
     const leftEdge = -HALF_WIDTH - WALL_THICKNESS;
     const rightEdge = HALF_WIDTH + WALL_THICKNESS;
-    const selected = this.isSelectedView(view);
+    const selected = this.gameStarted && this.isSelectedView(view);
 
     view.scoreText.setText(state.score.toString().padStart(5, '0'));
     view.scoreText.mesh.visible = selected;
@@ -2114,7 +2385,7 @@ export class BreakoutGame {
   }
 
   private updatePlaneStatusHud(view: InstanceView, state: BreakoutoutoutRenderState): void {
-    const selected = this.isSelectedView(view);
+    const selected = this.gameStarted && this.isSelectedView(view);
     const statusLabel = selected ? this.planeStatusLabel(state) : '';
     view.statusText.setText(statusLabel, 360);
     view.statusText.mesh.position.set(0, PLANE_STATUS_Y, PLANE_STATUS_Z);
@@ -2441,7 +2712,8 @@ export class BreakoutGame {
 
   private navigateInstances(direction: number): void {
     if (
-      this.instances.length <= 1
+      !this.gameStarted
+      || this.instances.length <= 1
       || direction === 0
       || this.splitSequenceActive
       || this.totalGameOver
@@ -2780,6 +3052,19 @@ export class BreakoutGame {
     }
   }
 
+  private updateSplitTutorialBillboard(): void {
+    if (!this.splitTutorial.visible) {
+      return;
+    }
+
+    this.splitTutorial.mesh.position.set(
+      this.cameraLookAtX,
+      this.cameraLookAtY,
+      this.cameraFocusZ + SPLIT_TUTORIAL_Z_OFFSET
+    );
+    this.splitTutorial.mesh.quaternion.copy(this.camera.quaternion);
+  }
+
   // private burst(instance: BreakoutoutoutInstance, x: number, y: number, color: number, kind: BrickKind): void {
   //   if (!this.nebula) {
   //     return;
@@ -2861,6 +3146,10 @@ export class BreakoutGame {
 
   private get selectedView(): InstanceView | null {
     return this.viewForInstanceAtTrack(this.selectedInstance, this.selectedTrackIndex);
+  }
+
+  private get isMainMenuActive(): boolean {
+    return !this.gameStarted && !this.projectorDebug;
   }
 
   private isFatalMissSequenceActive(): boolean {
@@ -4270,6 +4559,468 @@ class HudHeartsPlane {
   }
 }
 
+class MainMenuView {
+  readonly group = new THREE.Group();
+  readonly buttonMeshes: THREE.Mesh[];
+
+  private readonly cameraForward = new THREE.Vector3();
+  private readonly title = new MainMenuTitlePlane(MAIN_MENU_RENDER_ORDER + 3);
+  private readonly subtitle = new HudTextPlane({
+    fontSize: 34,
+    fill: '#a7f3d0',
+    weight: 'bold',
+    paddingX: 0,
+    paddingY: 0,
+    renderOrder: MAIN_MENU_RENDER_ORDER + 3
+  });
+  private readonly buttons = new Map<MainMenuAction, MenuButtonPlane>();
+  private hoveredAction: MainMenuAction | null = null;
+  private pressedAction: MainMenuAction | null = null;
+
+  constructor() {
+    this.title.mesh.position.set(0, MAIN_MENU_TITLE_Y, MAIN_MENU_BUTTON_Z + 0.08);
+    scaleMenuCanvasPlane(
+      this.title.mesh,
+      this.title.cssWidth,
+      this.title.cssHeight,
+      MAIN_MENU_TITLE_WORLD_HEIGHT,
+      MAIN_MENU_TITLE_MAX_WIDTH
+    );
+    this.group.add(this.title.mesh);
+
+    this.subtitle.setText('multidimensional breakout', 520);
+    this.subtitle.mesh.position.set(0, MAIN_MENU_SUBTITLE_Y, MAIN_MENU_BUTTON_Z + 0.06);
+    scaleMenuCanvasPlane(
+      this.subtitle.mesh,
+      this.subtitle.cssWidth,
+      this.subtitle.cssHeight,
+      MAIN_MENU_SUBTITLE_WORLD_HEIGHT,
+      MAIN_MENU_SUBTITLE_MAX_WIDTH
+    );
+    this.group.add(this.subtitle.mesh);
+
+    const startButton = new MenuButtonPlane('start', 'start game', MAIN_MENU_RENDER_ORDER + 4);
+    startButton.mesh.position.set(0, MAIN_MENU_START_BUTTON_Y, MAIN_MENU_BUTTON_Z + 0.1);
+    scaleMenuCanvasPlane(
+      startButton.mesh,
+      startButton.cssWidth,
+      startButton.cssHeight,
+      MAIN_MENU_BUTTON_WORLD_HEIGHT,
+      MAIN_MENU_BUTTON_MAX_WIDTH
+    );
+    this.buttons.set('start', startButton);
+
+    this.buttonMeshes = [startButton.mesh];
+    this.group.add(startButton.mesh);
+  }
+
+  setVisible(visible: boolean): void {
+    this.group.visible = visible;
+    if (!visible) {
+      this.setHoveredAction(null);
+      this.setPressedAction(null);
+    }
+  }
+
+  setHoveredAction(action: MainMenuAction | null): void {
+    this.hoveredAction = action;
+    this.refreshButtonStates();
+  }
+
+  setPressedAction(action: MainMenuAction | null): void {
+    this.pressedAction = action;
+    this.refreshButtonStates();
+  }
+
+  update(time: number, camera: THREE.Camera, distance: number): void {
+    if (!this.group.visible) {
+      return;
+    }
+
+    camera.getWorldDirection(this.cameraForward);
+    this.group.position
+      .copy(camera.position)
+      .addScaledVector(this.cameraForward, distance);
+    this.group.quaternion.copy(camera.quaternion);
+    this.group.translateY(Math.sin(time * 0.9) * 0.035);
+    this.group.rotateZ(Math.sin(time * 0.42) * 0.004);
+  }
+
+  private refreshButtonStates(): void {
+    for (const [action, button] of this.buttons) {
+      const hovered = action === this.hoveredAction;
+      button.setState(hovered, hovered && action === this.pressedAction);
+    }
+  }
+}
+
+class MainMenuTitlePlane {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private texture: THREE.CanvasTexture;
+
+  cssWidth = 1;
+  cssHeight = 1;
+
+  constructor(renderOrder: number) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create main menu title canvas.');
+    }
+
+    this.context = context;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.forceTransparent = true;
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = renderOrder;
+    this.draw();
+  }
+
+  private draw(): void {
+    const segments = [
+      { text: 'Break', size: 96, fill: '#f8fafc' },
+      { text: 'out', size: 96, fill: '#f8fafc' },
+      { text: 'out', size: 82, fill: '#7dd3fc' },
+      { text: 'out', size: 70, fill: '#f0c95d' }
+    ] as const;
+    const paddingX = 22;
+    const paddingY = 18;
+    const baseline = 104;
+    let textWidth = 0;
+
+    for (const segment of segments) {
+      this.context.font = titleFont(segment.size);
+      textWidth += this.context.measureText(segment.text).width;
+    }
+
+    this.cssWidth = Math.ceil(textWidth + paddingX * 2);
+    this.cssHeight = 142;
+    this.resizeCanvas(
+      Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
+      Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
+    );
+
+    this.context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    this.context.clearRect(0, 0, this.cssWidth, this.cssHeight);
+    this.context.textBaseline = 'alphabetic';
+    this.context.textAlign = 'left';
+    this.context.shadowColor = 'rgba(45, 212, 191, 0.42)';
+    this.context.shadowBlur = 18;
+
+    let x = (this.cssWidth - textWidth) / 2;
+    for (const segment of segments) {
+      this.context.font = titleFont(segment.size);
+      this.context.fillStyle = segment.fill;
+      this.context.fillText(segment.text, x, baseline + paddingY * 0.08);
+      x += this.context.measureText(segment.text).width;
+    }
+
+    this.context.shadowBlur = 0;
+    this.texture.needsUpdate = true;
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+}
+
+class MenuButtonPlane {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  readonly cssWidth = 430;
+  readonly cssHeight = 102;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private readonly label: string;
+  private texture: THREE.CanvasTexture;
+  private hovered = false;
+  private pressed = false;
+
+  constructor(action: MainMenuAction, label: string, renderOrder: number) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create main menu button canvas.');
+    }
+
+    this.context = context;
+    this.label = label;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.forceTransparent = true;
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = renderOrder;
+    this.mesh.userData.menuAction = action;
+    this.resizeCanvas(
+      Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
+      Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
+    );
+    this.draw();
+  }
+
+  setState(hovered: boolean, pressed: boolean): void {
+    if (this.hovered === hovered && this.pressed === pressed) {
+      return;
+    }
+
+    this.hovered = hovered;
+    this.pressed = pressed;
+    this.draw();
+  }
+
+  private draw(): void {
+    const radius = 8;
+    const borderWidth = this.hovered ? 3 : 2;
+    const fill = this.pressed
+      ? '#f0c95d'
+      : this.hovered
+        ? '#1f2937'
+        : 'rgba(8, 13, 18, 0.86)';
+    const border = this.pressed
+      ? '#fff3be'
+      : this.hovered
+        ? '#f0c95d'
+        : 'rgba(167, 243, 208, 0.66)';
+    const textFill = this.pressed ? '#08090d' : '#f8fafc';
+
+    this.context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    this.context.clearRect(0, 0, this.cssWidth, this.cssHeight);
+    this.context.shadowColor = this.hovered ? 'rgba(240, 201, 93, 0.35)' : 'rgba(45, 212, 191, 0.22)';
+    this.context.shadowBlur = this.hovered ? 16 : 10;
+    roundedRectPath(this.context, 3, 3, this.cssWidth - 6, this.cssHeight - 6, radius);
+    this.context.fillStyle = fill;
+    this.context.fill();
+    this.context.shadowBlur = 0;
+    this.context.lineWidth = borderWidth;
+    this.context.strokeStyle = border;
+    this.context.stroke();
+
+    this.context.font = `800 38px ${HUD_FONT_FAMILY}`;
+    this.context.fillStyle = textFill;
+    this.context.textAlign = 'center';
+    this.context.textBaseline = 'middle';
+    this.context.fillText(this.label, this.cssWidth / 2, this.cssHeight / 2 + (this.pressed ? 1 : 0));
+    this.texture.needsUpdate = true;
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+}
+
+class SplitTutorialView {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private texture: THREE.CanvasTexture;
+  private mode: SplitTutorialMode | null = null;
+
+  cssWidth = 760;
+  cssHeight = 150;
+
+  constructor(renderOrder: number) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create split tutorial canvas.');
+    }
+
+    this.context = context;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.material.userData.forceTransparent = true;
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = renderOrder;
+    this.mesh.visible = false;
+    this.resizeCanvas(
+      Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
+      Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
+    );
+    this.setMode('keyboard');
+  }
+
+  get visible(): boolean {
+    return this.mesh.visible;
+  }
+
+  setVisible(visible: boolean): void {
+    this.mesh.visible = visible;
+  }
+
+  setMode(mode: SplitTutorialMode): void {
+    if (this.mode === mode) {
+      return;
+    }
+
+    this.mode = mode;
+    this.draw();
+    scaleMenuCanvasPlane(
+      this.mesh,
+      this.cssWidth,
+      this.cssHeight,
+      SPLIT_TUTORIAL_WORLD_HEIGHT,
+      SPLIT_TUTORIAL_MAX_WIDTH
+    );
+  }
+
+  private draw(): void {
+    this.context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    this.context.clearRect(0, 0, this.cssWidth, this.cssHeight);
+    this.context.textAlign = 'center';
+    this.context.textBaseline = 'middle';
+    this.context.shadowColor = 'rgba(0, 0, 0, 0.92)';
+    this.context.shadowBlur = 12;
+    this.context.lineWidth = 5;
+    this.context.strokeStyle = 'rgba(0, 0, 0, 0.72)';
+    this.context.font = `900 32px ${HUD_FONT_FAMILY}`;
+
+    if (this.mode === 'touch') {
+      this.drawMobileTutorial();
+    } else {
+      this.drawKeyboardTutorial();
+    }
+
+    this.context.shadowBlur = 0;
+    this.texture.needsUpdate = true;
+  }
+
+  private drawKeyboardTutorial(): void {
+    const text = 'change dimension with';
+    const textX = 300;
+    const centerY = 76;
+    this.context.strokeText(text, textX, centerY);
+    this.context.fillStyle = '#f8fafc';
+    this.context.fillText(text, textX, centerY);
+    this.context.shadowBlur = 6;
+    this.drawKeycap(565, 76, '↑');
+    this.drawKeycap(632, 76, '↓');
+  }
+
+  private drawMobileTutorial(): void {
+    const text = 'change dimension with swipe up/down';
+    this.context.strokeText(text, 352, 76);
+    this.context.fillStyle = '#f8fafc';
+    this.context.fillText(text, 352, 76);
+    this.drawSwipeGlyph(662, 76);
+  }
+
+  private drawKeycap(centerX: number, centerY: number, label: string): void {
+    const width = 54;
+    const height = 54;
+    const x = centerX - width / 2;
+    const y = centerY - height / 2;
+
+    this.context.save();
+    this.context.shadowColor = 'rgba(125, 211, 252, 0.38)';
+    this.context.shadowBlur = 16;
+    roundedRectPath(this.context, x, y, width, height, 8);
+    this.context.fillStyle = '#e0f2fe';
+    this.context.fill();
+    this.context.shadowBlur = 0;
+    this.context.lineWidth = 3;
+    this.context.strokeStyle = '#38bdf8';
+    this.context.stroke();
+    this.context.font = `900 30px ${HUD_FONT_FAMILY}`;
+    this.context.fillStyle = '#07111a';
+    this.context.textAlign = 'center';
+    this.context.textBaseline = 'middle';
+    this.context.fillText(label, centerX, centerY - 1);
+    this.context.restore();
+  }
+
+  private drawSwipeGlyph(centerX: number, centerY: number): void {
+    this.context.save();
+    this.context.strokeStyle = '#7dd3fc';
+    this.context.fillStyle = '#7dd3fc';
+    this.context.lineWidth = 5;
+    this.context.lineCap = 'round';
+    this.context.beginPath();
+    this.context.moveTo(centerX, centerY + 32);
+    this.context.lineTo(centerX, centerY - 32);
+    this.context.stroke();
+    this.drawTriangle(centerX, centerY - 43, 0);
+    this.drawTriangle(centerX, centerY + 43, Math.PI);
+    this.context.restore();
+  }
+
+  private drawTriangle(centerX: number, centerY: number, rotation: number): void {
+    const radius = 10;
+    this.context.save();
+    this.context.translate(centerX, centerY);
+    this.context.rotate(rotation);
+    this.context.beginPath();
+    this.context.moveTo(0, -radius);
+    this.context.lineTo(radius * 0.9, radius * 0.7);
+    this.context.lineTo(-radius * 0.9, radius * 0.7);
+    this.context.closePath();
+    this.context.fill();
+    this.context.restore();
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+}
+
 function createHudCanvasTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -4327,6 +5078,22 @@ function roundedRectPath(
   context.closePath();
 }
 
+function titleFont(fontSize: number): string {
+  return `900 ${fontSize}px ${HUD_FONT_FAMILY}`;
+}
+
+function scaleMenuCanvasPlane(
+  mesh: THREE.Mesh,
+  cssWidth: number,
+  cssHeight: number,
+  preferredHeight: number,
+  maxWidth: number
+): void {
+  const aspect = cssHeight > 0 ? cssWidth / cssHeight : 1;
+  const height = Math.min(preferredHeight, maxWidth / Math.max(aspect, 0.001));
+  mesh.scale.set(height * aspect, height, 1);
+}
+
 function createPostProcessingUniforms(settings: PostProcessingSettings): PostProcessingUniforms {
   return {
     colorLevels: uniform(settings.colorLevels),
@@ -4354,6 +5121,42 @@ function postProcessingColorBleedScaleForSize(width: number, screenScale: number
 
 function stopEventPropagation(event: Event): void {
   event.stopPropagation();
+}
+
+function getSplitTutorialSeenFlag(): boolean {
+  try {
+    return window.localStorage.getItem(SPLIT_TUTORIAL_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setSplitTutorialSeenFlag(): void {
+  try {
+    window.localStorage.setItem(SPLIT_TUTORIAL_STORAGE_KEY, '1');
+  } catch {
+    // Local storage can be unavailable in strict privacy or embedded contexts.
+  }
+}
+
+function isTouchTutorialDevice(): boolean {
+  return navigator.maxTouchPoints > 0
+    || window.matchMedia('(pointer: coarse)').matches
+    || window.matchMedia('(hover: none)').matches;
+}
+
+function isMainMenuAction(value: unknown): value is MainMenuAction {
+  return value === 'start';
+}
+
+function isGameControlKey(code: string): boolean {
+  return code === 'ArrowLeft'
+    || code === 'ArrowRight'
+    || code === 'ArrowUp'
+    || code === 'ArrowDown'
+    || code === 'Space'
+    || code === 'Enter'
+    || code === 'KeyR';
 }
 
 function controlDefinitionForKey(key: PostProcessingSettingKey): PostProcessingControlDefinition | undefined {
