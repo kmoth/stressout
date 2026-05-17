@@ -102,6 +102,9 @@ const GAME_OVER_CAMERA_SHAKE_RAMP_DURATION = 0.82;
 const GAME_OVER_CAMERA_SHAKE_X = 0.1;
 const GAME_OVER_CAMERA_SHAKE_Y = 0.1;
 const GAME_OVER_CAMERA_SHAKE_ROLL = 0.000;
+const AUTOPILOT_SELECTION_COOLDOWN = 1;
+const AUTOPILOT_SELECTION_PADDLE_APPROACH_DISTANCE = 2.25;
+const AUTOPILOT_SELECTION_MIN_APPROACH_SPEED = 0.05;
 const TOUCH_SWIPE_MIN_DISTANCE = 44;
 const TOUCH_SWIPE_AXIS_RATIO = 1.15;
 const SELECTED_OPACITY = 1;
@@ -503,6 +506,7 @@ export class BreakoutGame {
   private nextInstanceId = 1;
   private selectedIndex = 0;
   private selectedTrackIndex = 0;
+  private lastAutopilotSelectionChangeTime = Number.NEGATIVE_INFINITY;
   private hasNavigatedInstances = false;
   private globalScore = 0;
   private gameSpeed = 1;
@@ -1308,6 +1312,8 @@ export class BreakoutGame {
         }
         this.accumulator -= FIXED_STEP;
       }
+
+      this.maybeSelectAutopilotPaddleThreat(time / 1000);
     }
 
     this.syncViews(time / 1000);
@@ -1367,6 +1373,7 @@ export class BreakoutGame {
     this.nextInstanceId = 1;
     this.selectedIndex = 0;
     this.selectedTrackIndex = 0;
+    this.lastAutopilotSelectionChangeTime = Number.NEGATIVE_INFINITY;
     this.hasNavigatedInstances = false;
     this.globalScore = 0;
     this.gameSpeed = 1;
@@ -2385,6 +2392,51 @@ export class BreakoutGame {
 
     return this.selectedTrackIndex
       + positiveModulo(instanceIndex - this.selectedIndex, this.instances.length);
+  }
+
+  private maybeSelectAutopilotPaddleThreat(time: number): void {
+    if (
+      !this.autopilot
+      || this.instances.length <= 1
+      || this.splitSequenceActive
+      || this.totalGameOver
+      || this.isFatalMissSequenceActive()
+      || time - this.lastAutopilotSelectionChangeTime < AUTOPILOT_SELECTION_COOLDOWN
+    ) {
+      return;
+    }
+
+    const selected = this.selectedInstance;
+    if (selected && autopilotPaddleApproachTime(selected.getRenderState()) !== null) {
+      return;
+    }
+
+    let nextInstance: BreakoutoutoutInstance | null = null;
+    let nextApproachTime = Number.POSITIVE_INFINITY;
+
+    for (const instance of this.instances) {
+      if (instance === selected || !instance.isActive()) {
+        continue;
+      }
+
+      const approachTime = autopilotPaddleApproachTime(instance.getRenderState());
+      if (approachTime === null || approachTime >= nextApproachTime) {
+        continue;
+      }
+
+      nextInstance = instance;
+      nextApproachTime = approachTime;
+    }
+
+    if (!nextInstance) {
+      return;
+    }
+
+    const previousIndex = this.selectedIndex;
+    this.focusInstance(nextInstance);
+    if (this.selectedIndex !== previousIndex) {
+      this.lastAutopilotSelectionChangeTime = time;
+    }
   }
 
   private navigateInstances(direction: number): void {
@@ -4537,6 +4589,25 @@ function greyscaleHex(hex: number): number {
 
 function isTerminalPhase(phase: BreakoutoutoutRenderState['phase']): boolean {
   return phase === 'game-over' || phase === 'cleared';
+}
+
+function autopilotPaddleApproachTime(state: BreakoutoutoutRenderState): number | null {
+  const approachSpeed = -state.ball.vy;
+  if (
+    state.phase !== 'playing'
+    || state.fatalMissPending
+    || approachSpeed <= AUTOPILOT_SELECTION_MIN_APPROACH_SPEED
+  ) {
+    return null;
+  }
+
+  const paddleContactY = PADDLE_Y + PADDLE_HEIGHT / 2 + BALL_RADIUS;
+  const distanceToPaddle = state.ball.y - paddleContactY;
+  if (distanceToPaddle < 0 || distanceToPaddle > AUTOPILOT_SELECTION_PADDLE_APPROACH_DISTANCE) {
+    return null;
+  }
+
+  return distanceToPaddle / approachSpeed;
 }
 
 function disposeObject(object: THREE.Object3D): void {
