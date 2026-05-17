@@ -2376,10 +2376,10 @@ export class BreakoutGame {
     const topEdge = HALF_HEIGHT + WALL_THICKNESS;
     const leftEdge = -HALF_WIDTH - WALL_THICKNESS;
     const rightEdge = HALF_WIDTH + WALL_THICKNESS;
-    const selected = this.gameStarted && this.isSelectedView(view);
+    const visible = this.gameStarted;
 
     view.scoreText.setText(state.score.toString().padStart(5, '0'));
-    view.scoreText.mesh.visible = selected;
+    view.scoreText.mesh.visible = visible;
     this.scalePlaneHudText(view.scoreText, PLANE_SCORE_WORLD_HEIGHT, PLANE_SCORE_MAX_WIDTH);
     view.scoreText.mesh.position.set(
       leftEdge + view.scoreText.mesh.scale.x / 2,
@@ -2389,7 +2389,7 @@ export class BreakoutGame {
 
     view.hearts.setCount(state.lives);
     this.scalePlaneHudPlane(view.hearts, PLANE_HEART_WORLD_HEIGHT, PLANE_HEART_MAX_WIDTH);
-    view.hearts.mesh.visible = selected && state.lives > 0;
+    view.hearts.mesh.visible = visible && state.lives > 0;
     view.hearts.mesh.position.set(
       rightEdge - view.hearts.mesh.scale.x / 2,
       topEdge + PLANE_CORNER_HUD_GAP + view.hearts.mesh.scale.y / 2,
