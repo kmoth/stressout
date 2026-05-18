@@ -47,10 +47,9 @@ import {
   WALL_THICKNESS
 } from './BreakoutoutoutInstance';
 import {
-  fetchLeaderboard,
-  isLeaderboardScoreQualified,
-  submitLeaderboardScore,
-  type LeaderboardEntry
+  createScoreboardAdapter,
+  type LeaderboardEntry,
+  type ScoreboardAdapter
 } from './leaderboard';
 import { SoundBank } from './sound';
 
@@ -541,6 +540,7 @@ export class BreakoutGame {
   private readonly mainMenu: MainMenuView;
   private readonly pauseMenu: PauseMenuView;
   private readonly splitTutorial = new SplitTutorialView(MAIN_MENU_RENDER_ORDER + 6);
+  private readonly scoreboard: ScoreboardAdapter = createScoreboardAdapter();
   private readonly stats = new Stats();
   private readonly sound = new SoundBank();
   private readonly keys = new Set<string>();
@@ -2092,7 +2092,7 @@ export class BreakoutGame {
     this.leaderboardLoadState = 'loading';
 
     try {
-      const leaderboard = await fetchLeaderboard();
+      const leaderboard = await this.scoreboard.load();
       if (refreshId !== this.leaderboardRefreshId) {
         return;
       }
@@ -2136,7 +2136,7 @@ export class BreakoutGame {
       return;
     }
 
-    if (!isLeaderboardScoreQualified(score, this.leaderboardEntries)) {
+    if (!this.scoreboard.isScoreQualified(score, this.leaderboardEntries)) {
       return;
     }
 
@@ -2203,7 +2203,7 @@ export class BreakoutGame {
 
   private async submitLeaderboardEntryAsync(submission: LeaderboardSubmission): Promise<void> {
     try {
-      const response = await submitLeaderboardScore(submission.name, submission.score);
+      const response = await this.scoreboard.submit(submission.name, submission.score);
       if (this.leaderboardSubmission !== submission) {
         return;
       }

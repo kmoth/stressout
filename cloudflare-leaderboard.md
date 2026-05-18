@@ -11,6 +11,13 @@ The Pages Function is type-checked with `functions/tsconfig.json`, which uses Wr
 
 Run `npm run cf:types` after changing `wrangler.jsonc` or Cloudflare bindings.
 
+Client scoreboard access goes through a shared adapter interface:
+
+- `local`: stores scores in `localStorage` under the default ruleset key. This mode is selected automatically for Vite/local hosts.
+- `live`: uses `/api/leaderboard` and Turnstile. This mode is selected automatically for hosted non-local runtimes.
+
+You can force either mode with `?scoreboard=local` or `?scoreboard=live`, or at build time with `VITE_SCOREBOARD_MODE=local|live`.
+
 Create the D1 database and apply `migrations/0001_leaderboard.sql`. The function also runs `CREATE TABLE IF NOT EXISTS` defensively, but the migration is the deployment source of truth.
 
 Create a Cloudflare Turnstile widget in Invisible mode. Use its site key as `VITE_TURNSTILE_SITE_KEY`, and its secret key as `TURNSTILE_SECRET_KEY`.
