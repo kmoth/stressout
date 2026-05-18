@@ -46,6 +46,12 @@ import {
   PLAYFIELD_DEPTH,
   WALL_THICKNESS
 } from './BreakoutoutoutInstance';
+import {
+  fetchLeaderboard,
+  isLeaderboardScoreQualified,
+  submitLeaderboardScore,
+  type LeaderboardEntry
+} from './leaderboard';
 import { SoundBank } from './sound';
 
 type ProjectorBeamSettings = {
@@ -178,6 +184,11 @@ const PLANE_RESTART_WORLD_HEIGHT = 0.9;
 const PLANE_RESTART_MAX_WIDTH = 6.4;
 const PLANE_RESTART_Y = -2.95;
 const PLANE_RESTART_Z = 0.9;
+const LEADERBOARD_NAME_MAX_LENGTH = 6;
+const LEADERBOARD_PANEL_WORLD_HEIGHT = 5.65;
+const LEADERBOARD_PANEL_MAX_WIDTH = 7.7;
+const LEADERBOARD_PANEL_Y = 2.28;
+const LEADERBOARD_PANEL_Z = 0.98;
 const PLANE_CORNER_HUD_Z = 0.92;
 const PLANE_CORNER_HUD_GAP = 0.28;
 const PLANE_SCORE_WORLD_HEIGHT = 0.84;
@@ -462,6 +473,27 @@ type MenuButtonAction = MainMenuAction | PauseMenuAction;
 
 type SplitTutorialMode = 'keyboard' | 'touch';
 
+type LeaderboardLoadState = 'loading' | 'ready' | 'unavailable';
+
+type LeaderboardSubmissionState = 'entry' | 'submitting' | 'submitted' | 'error';
+
+type LeaderboardSubmission = {
+  score: number;
+  name: string;
+  state: LeaderboardSubmissionState;
+  message?: string;
+};
+
+type LeaderboardPanelMode = Exclude<LeaderboardLoadState, 'ready'> | LeaderboardSubmissionState | 'view';
+
+type LeaderboardPanelState = {
+  mode: LeaderboardPanelMode;
+  entries: readonly LeaderboardEntry[];
+  score: number;
+  name: string;
+  message: string;
+};
+
 type InstanceView = {
   instance: BreakoutoutoutInstance;
   group: THREE.Group;
@@ -477,6 +509,7 @@ type InstanceView = {
   hearts: HudHeartsPlane;
   statusText: HudTextPlane;
   restartButtonText: HudTextPlane;
+  leaderboardPanel: LeaderboardPanelPlane;
   renderState: BreakoutoutoutRenderState;
   trajectoryProjectionCache: TrajectoryProjectionCache | null;
   appliedOpacity: number;
@@ -550,6 +583,10 @@ export class BreakoutGame {
   private lastAutopilotSelectionChangeTime = Number.NEGATIVE_INFINITY;
   private hasNavigatedInstances = false;
   private globalScore = 0;
+  private leaderboardLoadState: LeaderboardLoadState = 'loading';
+  private leaderboardEntries: LeaderboardEntry[] = [];
+  private leaderboardSubmission: LeaderboardSubmission | null = null;
+  private leaderboardRefreshId = 0;
   private gameSpeed = 1;
   private gameSpeedTween: GameSpeedTween | null = null;
   private splitSequenceActive = false;
@@ -649,6 +686,7 @@ export class BreakoutGame {
     this.scene.add(this.splitTutorial.mesh);
     this.attachInput();
     this.resize();
+    void this.refreshLeaderboard();
   }
 
   private createRetroPipeline(scenePass: ReturnType<typeof retroPass>): THREE.Node {
@@ -870,6 +908,7 @@ export class BreakoutGame {
     const hearts = new HudHeartsPlane({ renderOrder: PLANE_HUD_RENDER_ORDER });
     const statusText = this.createPlaneStatusText();
     const restartButtonText = this.createPlaneRestartButtonText();
+    const leaderboardPanel = new LeaderboardPanelPlane(PLANE_HUD_RENDER_ORDER + 2);
     const bricks = new Map<string, THREE.Mesh>();
     const activeBrickIds = new Set<string>();
     const splitGlowMeshes: SplitGlowMesh[] = [];
@@ -877,7 +916,16 @@ export class BreakoutGame {
     const wallMeshes = this.createWalls(group, splitGlowMeshes);
     splitGlowMeshes.push(this.attachSplitGlow(paddleMesh, PADDLE_EMISSIVE, { baseScale: 1.18, pulseScale: 0.42 }));
     splitGlowMeshes.push(this.attachSplitGlow(ballMesh, 0xffe5a8, { baseScale: 1.75, pulseScale: 0.86 }));
-    group.add(trajectoryProjection.mesh, paddleMesh, ballMesh, scoreText.mesh, hearts.mesh, statusText.mesh, restartButtonText.mesh);
+    group.add(
+      trajectoryProjection.mesh,
+      paddleMesh,
+      ballMesh,
+      scoreText.mesh,
+      hearts.mesh,
+      statusText.mesh,
+      restartButtonText.mesh,
+      leaderboardPanel.mesh
+    );
 
     const view: InstanceView = {
       instance,
@@ -894,6 +942,7 @@ export class BreakoutGame {
       hearts,
       statusText,
       restartButtonText,
+      leaderboardPanel,
       renderState: state,
       trajectoryProjectionCache: null,
       appliedOpacity: Number.NaN,
@@ -1095,6 +1144,12 @@ export class BreakoutGame {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (this.isLeaderboardEntryActive()) {
+      event.preventDefault();
+      this.handleLeaderboardEntryKeyDown(event);
+      return;
+    }
+
     if (event.code === 'KeyP') {
       event.preventDefault();
       if (!event.repeat) {
@@ -1757,6 +1812,7 @@ export class BreakoutGame {
     this.lastAutopilotSelectionChangeTime = Number.NEGATIVE_INFINITY;
     this.hasNavigatedInstances = false;
     this.globalScore = 0;
+    this.leaderboardSubmission = null;
     this.gameSpeed = 1;
     this.gameSpeedTween = null;
     this.splitSequenceActive = false;
@@ -2027,6 +2083,170 @@ export class BreakoutGame {
     }
 
     this.syncBallSpeedForAll();
+    this.prepareLeaderboardAfterGameOver(this.globalScore);
+  }
+
+  private async refreshLeaderboard(): Promise<void> {
+    const refreshId = this.leaderboardRefreshId + 1;
+    this.leaderboardRefreshId = refreshId;
+    this.leaderboardLoadState = 'loading';
+
+    try {
+      const leaderboard = await fetchLeaderboard();
+      if (refreshId !== this.leaderboardRefreshId) {
+        return;
+      }
+
+      this.leaderboardEntries = leaderboard.entries;
+      this.leaderboardLoadState = 'ready';
+    } catch (error) {
+      if (refreshId !== this.leaderboardRefreshId) {
+        return;
+      }
+
+      console.warn('Leaderboard unavailable.', error);
+      this.leaderboardEntries = [];
+      this.leaderboardLoadState = 'unavailable';
+    }
+  }
+
+  private prepareLeaderboardAfterGameOver(score: number): void {
+    if (!this.isLeaderboardEligibleMode() || score <= 0) {
+      return;
+    }
+
+    void this.prepareLeaderboardSubmission(score);
+  }
+
+  private isLeaderboardEligibleMode(): boolean {
+    return !this.autopilot
+      && !this.projectorDebug
+      && this.instanceOptions.sandbox !== true
+      && this.instanceOptions.specialBrickKinds === undefined
+      && this.initialInstanceCount === DEFAULT_INITIAL_INSTANCE_COUNT
+      && this.ballSpeedMultiplierActiveGameCap === DEFAULT_BALL_SPEED_MULTIPLIER_ACTIVE_GAME_CAP;
+  }
+
+  private async prepareLeaderboardSubmission(score: number): Promise<void> {
+    if (this.leaderboardLoadState !== 'ready') {
+      await this.refreshLeaderboard();
+    }
+
+    if (!this.totalGameOver || this.globalScore !== score || this.leaderboardLoadState !== 'ready') {
+      return;
+    }
+
+    if (!isLeaderboardScoreQualified(score, this.leaderboardEntries)) {
+      return;
+    }
+
+    this.leaderboardSubmission = {
+      score,
+      name: '',
+      state: 'entry'
+    };
+  }
+
+  private handleLeaderboardEntryKeyDown(event: KeyboardEvent): void {
+    const submission = this.leaderboardSubmission;
+    if (!submission || (submission.state !== 'entry' && submission.state !== 'error')) {
+      return;
+    }
+
+    if (event.code === 'Backspace') {
+      submission.name = submission.name.slice(0, -1);
+      submission.state = 'entry';
+      submission.message = undefined;
+      return;
+    }
+
+    if (event.code === 'Escape') {
+      this.leaderboardSubmission = null;
+      return;
+    }
+
+    if (event.code === 'Enter') {
+      this.submitLeaderboardEntry();
+      return;
+    }
+
+    if (event.key.length !== 1 || submission.name.length >= LEADERBOARD_NAME_MAX_LENGTH) {
+      return;
+    }
+
+    const character = event.key.toUpperCase();
+    if (!/^[A-Z0-9]$/.test(character)) {
+      return;
+    }
+
+    submission.name += character;
+    submission.state = 'entry';
+    submission.message = undefined;
+  }
+
+  private submitLeaderboardEntry(): void {
+    const submission = this.leaderboardSubmission;
+    if (!submission || submission.state === 'submitting' || submission.state === 'submitted') {
+      return;
+    }
+
+    if (submission.name.length === 0) {
+      submission.state = 'error';
+      submission.message = 'ENTER NAME';
+      return;
+    }
+
+    submission.state = 'submitting';
+    submission.message = 'VERIFYING';
+    void this.submitLeaderboardEntryAsync(submission);
+  }
+
+  private async submitLeaderboardEntryAsync(submission: LeaderboardSubmission): Promise<void> {
+    try {
+      const response = await submitLeaderboardScore(submission.name, submission.score);
+      if (this.leaderboardSubmission !== submission) {
+        return;
+      }
+
+      this.leaderboardEntries = response.entries;
+      this.leaderboardLoadState = 'ready';
+      submission.state = 'submitted';
+      submission.message = response.accepted ? 'SAVED' : 'TOP 10 CHANGED';
+    } catch (error) {
+      if (this.leaderboardSubmission !== submission) {
+        return;
+      }
+
+      console.warn('Leaderboard submission failed.', error);
+      submission.state = 'error';
+      submission.message = 'SAVE FAILED';
+    }
+  }
+
+  private isLeaderboardEntryActive(): boolean {
+    const state = this.leaderboardSubmission?.state;
+    return state === 'entry' || state === 'error' || state === 'submitting';
+  }
+
+  private leaderboardPanelState(): LeaderboardPanelState {
+    const submission = this.leaderboardSubmission;
+    if (submission) {
+      return {
+        mode: submission.state,
+        entries: this.leaderboardEntries,
+        score: submission.score,
+        name: submission.name,
+        message: submission.message ?? ''
+      };
+    }
+
+    return {
+      mode: this.leaderboardLoadState === 'ready' ? 'view' : this.leaderboardLoadState,
+      entries: this.leaderboardEntries,
+      score: this.globalScore,
+      name: '',
+      message: ''
+    };
   }
 
   private volumeForInstance(instance: BreakoutoutoutInstance): number {
@@ -2575,6 +2795,7 @@ export class BreakoutGame {
     view.statusText.setText(statusLabel, 360);
     view.statusText.mesh.position.set(0, PLANE_STATUS_Y, PLANE_STATUS_Z);
     this.updatePlaneRestartButtonHud(view, selected && this.totalGameOver && state.phase === 'game-over');
+    this.updateLeaderboardPanelHud(view, selected && this.totalGameOver && state.phase === 'game-over');
 
     if (statusLabel.length === 0) {
       return;
@@ -2592,6 +2813,18 @@ export class BreakoutGame {
     }
 
     this.scalePlaneHudText(view.restartButtonText, PLANE_RESTART_WORLD_HEIGHT, PLANE_RESTART_MAX_WIDTH);
+  }
+
+  private updateLeaderboardPanelHud(view: InstanceView, visible: boolean): void {
+    view.leaderboardPanel.setState(this.leaderboardPanelState());
+    view.leaderboardPanel.mesh.visible = visible;
+    view.leaderboardPanel.mesh.position.set(0, LEADERBOARD_PANEL_Y, LEADERBOARD_PANEL_Z);
+
+    if (!visible) {
+      return;
+    }
+
+    this.scalePlaneHudPlane(view.leaderboardPanel, LEADERBOARD_PANEL_WORLD_HEIGHT, LEADERBOARD_PANEL_MAX_WIDTH);
   }
 
   private planeStatusLabel(state: BreakoutoutoutRenderState): string {
@@ -2626,7 +2859,11 @@ export class BreakoutGame {
     text.mesh.scale.set(height * aspect, height, 1);
   }
 
-  private scalePlaneHudPlane(plane: HudHeartsPlane, preferredHeight: number, maxWidth: number): void {
+  private scalePlaneHudPlane(
+    plane: { cssWidth: number; cssHeight: number; mesh: THREE.Mesh },
+    preferredHeight: number,
+    maxWidth: number
+  ): void {
     const aspect = plane.cssHeight > 0 ? plane.cssWidth / plane.cssHeight : 1;
     const height = Math.min(preferredHeight, maxWidth / Math.max(aspect, 0.001));
     plane.mesh.scale.set(height * aspect, height, 1);
@@ -3240,6 +3477,9 @@ export class BreakoutGame {
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
       view.restartButtonText.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
+      view.leaderboardPanel.mesh.quaternion
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
     }
@@ -4752,6 +4992,244 @@ class HudHeartsPlane {
   }
 }
 
+class LeaderboardPanelPlane {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  readonly cssWidth = 720;
+  readonly cssHeight = 520;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private texture: THREE.CanvasTexture;
+  private lastSignature = '';
+
+  constructor(renderOrder: number) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create leaderboard canvas.');
+    }
+
+    this.context = context;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.material.userData.forceTransparent = true;
+
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = renderOrder;
+    this.mesh.visible = false;
+    this.resizeCanvas(
+      Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
+      Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
+    );
+    this.setState({
+      mode: 'loading',
+      entries: [],
+      score: 0,
+      name: '',
+      message: ''
+    });
+  }
+
+  setState(state: LeaderboardPanelState): void {
+    const signature = JSON.stringify({
+      mode: state.mode,
+      entries: state.entries,
+      score: state.score,
+      name: state.name,
+      message: state.message
+    });
+    if (signature === this.lastSignature) {
+      return;
+    }
+
+    this.lastSignature = signature;
+    this.draw(state);
+  }
+
+  private draw(state: LeaderboardPanelState): void {
+    const context = this.context;
+    context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    context.clearRect(0, 0, this.cssWidth, this.cssHeight);
+
+    context.shadowColor = 'rgba(45, 212, 191, 0.28)';
+    context.shadowBlur = 24;
+    roundedRectPath(context, 10, 10, this.cssWidth - 20, this.cssHeight - 20, 10);
+    context.fillStyle = 'rgba(7, 10, 15, 0.9)';
+    context.fill();
+    context.shadowBlur = 0;
+    context.lineWidth = 3;
+    context.strokeStyle = 'rgba(167, 243, 208, 0.64)';
+    context.stroke();
+
+    context.lineWidth = 1;
+    context.strokeStyle = 'rgba(240, 201, 93, 0.24)';
+    roundedRectPath(context, 28, 28, this.cssWidth - 56, this.cssHeight - 56, 6);
+    context.stroke();
+
+    this.drawHeader(state.score);
+    this.drawEntries(state.entries);
+    this.drawFooter(state);
+
+    this.texture.needsUpdate = true;
+  }
+
+  private drawHeader(score: number): void {
+    this.context.textBaseline = 'middle';
+    this.context.textAlign = 'left';
+    this.context.font = `900 32px ${HUD_FONT_FAMILY}`;
+    this.context.fillStyle = '#f8fafc';
+    this.context.fillText('TOP 10', 52, 58);
+
+    this.context.textAlign = 'right';
+    this.context.font = `800 22px ${HUD_FONT_FAMILY}`;
+    this.context.fillStyle = '#f0c95d';
+    this.context.fillText(`SCORE ${formatLeaderboardScore(score)}`, this.cssWidth - 52, 58);
+
+    this.context.globalAlpha = 0.22;
+    this.context.strokeStyle = '#a7f3d0';
+    this.context.beginPath();
+    this.context.moveTo(52, 92);
+    this.context.lineTo(this.cssWidth - 52, 92);
+    this.context.stroke();
+    this.context.globalAlpha = 1;
+  }
+
+  private drawEntries(entries: readonly LeaderboardEntry[]): void {
+    const rowTop = 110;
+    const rowHeight = 28;
+
+    if (entries.length === 0) {
+      this.context.textAlign = 'center';
+      this.context.textBaseline = 'middle';
+      this.context.font = `800 24px ${HUD_FONT_FAMILY}`;
+      this.context.fillStyle = 'rgba(244, 249, 248, 0.62)';
+      this.context.fillText('NO SCORES YET', this.cssWidth / 2, rowTop + rowHeight * 4.7);
+      return;
+    }
+
+    this.context.textBaseline = 'middle';
+    for (let index = 0; index < 10; index += 1) {
+      const y = rowTop + index * rowHeight;
+      const entry = entries[index];
+      this.context.globalAlpha = index % 2 === 0 ? 0.08 : 0.035;
+      this.context.fillStyle = '#a7f3d0';
+      roundedRectPath(this.context, 50, y - 12, this.cssWidth - 100, 24, 4);
+      this.context.fill();
+      this.context.globalAlpha = entry ? 1 : 0.35;
+
+      this.context.textAlign = 'right';
+      this.context.font = `800 18px ${HUD_FONT_FAMILY}`;
+      this.context.fillStyle = '#7dd3fc';
+      this.context.fillText(String(index + 1).padStart(2, '0'), 86, y);
+
+      this.context.textAlign = 'left';
+      this.context.font = `900 20px ${HUD_FONT_FAMILY}`;
+      this.context.fillStyle = '#f8fafc';
+      this.context.fillText(entry?.name ?? '------', 112, y);
+
+      this.context.textAlign = 'right';
+      this.context.font = `800 20px ${HUD_FONT_FAMILY}`;
+      this.context.fillStyle = '#f0c95d';
+      this.context.fillText(entry ? formatLeaderboardScore(entry.score) : '-----', this.cssWidth - 58, y);
+    }
+
+    this.context.globalAlpha = 1;
+  }
+
+  private drawFooter(state: LeaderboardPanelState): void {
+    const footerTop = 405;
+    this.context.globalAlpha = 0.22;
+    this.context.strokeStyle = '#a7f3d0';
+    this.context.beginPath();
+    this.context.moveTo(52, footerTop - 20);
+    this.context.lineTo(this.cssWidth - 52, footerTop - 20);
+    this.context.stroke();
+    this.context.globalAlpha = 1;
+
+    if (state.mode === 'loading') {
+      this.drawFooterMessage('LOADING SCORES', '#a7f3d0');
+      return;
+    }
+
+    if (state.mode === 'unavailable') {
+      this.drawFooterMessage('LEADERBOARD OFFLINE', '#fb7185');
+      return;
+    }
+
+    if (state.mode === 'entry' || state.mode === 'error' || state.mode === 'submitting') {
+      this.drawNameEntry(state);
+      return;
+    }
+
+    if (state.mode === 'submitted') {
+      this.drawFooterMessage(state.message || 'SAVED', '#a7f3d0');
+    }
+  }
+
+  private drawNameEntry(state: LeaderboardPanelState): void {
+    this.context.textAlign = 'center';
+    this.context.textBaseline = 'middle';
+    this.context.font = `900 26px ${HUD_FONT_FAMILY}`;
+    this.context.fillStyle = state.mode === 'error' ? '#fb7185' : '#f8fafc';
+    this.context.fillText(state.message || 'NEW TOP SCORE', this.cssWidth / 2, 410);
+
+    const boxSize = 42;
+    const gap = 9;
+    const totalWidth = LEADERBOARD_NAME_MAX_LENGTH * boxSize + (LEADERBOARD_NAME_MAX_LENGTH - 1) * gap;
+    const startX = (this.cssWidth - totalWidth) / 2;
+    for (let index = 0; index < LEADERBOARD_NAME_MAX_LENGTH; index += 1) {
+      const x = startX + index * (boxSize + gap);
+      const character = state.name[index] ?? '';
+      roundedRectPath(this.context, x, 438, boxSize, boxSize, 6);
+      this.context.fillStyle = character ? 'rgba(240, 201, 93, 0.92)' : 'rgba(244, 249, 248, 0.08)';
+      this.context.fill();
+      this.context.lineWidth = 2;
+      this.context.strokeStyle = character ? '#fff3be' : 'rgba(167, 243, 208, 0.38)';
+      this.context.stroke();
+
+      if (character) {
+        this.context.font = `900 24px ${HUD_FONT_FAMILY}`;
+        this.context.fillStyle = '#08090d';
+        this.context.fillText(character, x + boxSize / 2, 438 + boxSize / 2 + 1);
+      }
+    }
+
+    this.context.font = `800 15px ${HUD_FONT_FAMILY}`;
+    this.context.fillStyle = state.mode === 'submitting' ? '#a7f3d0' : 'rgba(244, 249, 248, 0.58)';
+    this.context.fillText(state.mode === 'submitting' ? 'VERIFYING' : 'ENTER SAVE   ESC SKIP', this.cssWidth / 2, 500);
+  }
+
+  private drawFooterMessage(message: string, fill: string): void {
+    this.context.textAlign = 'center';
+    this.context.textBaseline = 'middle';
+    this.context.font = `900 26px ${HUD_FONT_FAMILY}`;
+    this.context.fillStyle = fill;
+    this.context.fillText(message, this.cssWidth / 2, 450);
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+}
+
 class MainMenuView {
   readonly group = new THREE.Group();
   readonly buttonMeshes: THREE.Mesh[];
@@ -5458,6 +5936,10 @@ function roundedRectPath(
 
 function titleFont(fontSize: number): string {
   return `900 ${fontSize}px ${HUD_FONT_FAMILY}`;
+}
+
+function formatLeaderboardScore(score: number): string {
+  return Math.max(0, Math.floor(score)).toString().padStart(5, '0');
 }
 
 function scaleMenuCanvasPlane(

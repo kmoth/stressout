@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
+    "cf:types": "wrangler types --path functions/types.d.ts",
+    "build": "tsc --noEmit && tsc --noEmit -p functions/tsconfig.json && vite build",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "@types/howler": "^2.2.12",
     "@types/three": "^0.184.1",
     "typescript": "^6.0.3",
-    "vite": "^8.0.13"
+    "vite": "^8.0.13",
+    "wrangler": "^4.92.0"
   }
 }
