@@ -807,6 +807,18 @@ export class BreakoutGame {
     }
   }
 
+  private invalidateTrajectoryProjectionCacheForInstance(instance: BreakoutoutoutInstance): void {
+    for (const view of this.views) {
+      if (view.instance !== instance) {
+        continue;
+      }
+
+      view.trajectoryProjectionCache = null;
+      view.trajectoryProjection.resetPhase();
+      return;
+    }
+  }
+
   static async create(root: HTMLElement, options: BreakoutGameOptions = {}): Promise<BreakoutGame> {
     await RAPIER.init();
     const game = new BreakoutGame(root, options);
@@ -2022,11 +2034,13 @@ export class BreakoutGame {
     }
 
     let shouldSyncBallSpeed = false;
+    let shouldInvalidateTrajectoryProjection = false;
     const volume = this.volumeForInstance(instance);
 
     for (const event of events) {
       if (event.type === 'sound') {
         this.sound.play(event.name, volume);
+        shouldInvalidateTrajectoryProjection ||= event.name === 'paddle' || event.name === 'wall';
       }
 
       // if (event.type === 'brick-hit') {
@@ -2034,6 +2048,7 @@ export class BreakoutGame {
       // }
       if (event.type === 'brick-hit') {
         this.globalScore += event.points;
+        shouldInvalidateTrajectoryProjection = true;
       }
 
       if (event.type === 'split') {
@@ -2047,6 +2062,10 @@ export class BreakoutGame {
       if (event.type === 'state-changed') {
         shouldSyncBallSpeed = true;
       }
+    }
+
+    if (shouldInvalidateTrajectoryProjection) {
+      this.invalidateTrajectoryProjectionCacheForInstance(instance);
     }
 
     if (instance.getRenderState().phase === 'game-over') {
