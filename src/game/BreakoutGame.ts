@@ -1,4 +1,3 @@
-import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three/webgpu';
 import { posterize, replaceDefaultUV, screenSize, uniform } from 'three/tsl';
 import { barrelUV, colorBleeding, scanlines, vignette } from 'three/examples/jsm/tsl/display/CRT.js';
@@ -820,7 +819,6 @@ export class BreakoutGame {
   }
 
   static async create(root: HTMLElement, options: BreakoutGameOptions = {}): Promise<BreakoutGame> {
-    await RAPIER.init();
     const game = new BreakoutGame(root, options);
     await game.renderer.init();
     game.createNebulaSystem();

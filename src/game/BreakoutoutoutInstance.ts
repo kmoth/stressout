@@ -1,5 +1,3 @@
-import RAPIER from '@dimforge/rapier3d-compat';
-import type { Collider, EventQueue, RigidBody, World } from '@dimforge/rapier3d-compat';
 import type { ToneName } from './sound';
 
 export const BOARD_WIDTH = 12;
@@ -47,6 +45,15 @@ const MIN_BALL_VERTICAL_DIRECTION = 0.18;
 const MAX_BALL_SPEED_FACTOR = 1.25;
 const READY_DURATION = 5;
 const FATAL_MISS_Y = PADDLE_Y - PADDLE_HEIGHT / 2 - BALL_RADIUS;
+const PLAYFIELD_LEFT = -HALF_WIDTH + BALL_RADIUS;
+const PLAYFIELD_RIGHT = HALF_WIDTH - BALL_RADIUS;
+const PLAYFIELD_TOP = HALF_HEIGHT - BALL_RADIUS;
+const PLAYFIELD_BOTTOM = -HALF_HEIGHT + BALL_RADIUS;
+const BALL_READY_Y = PADDLE_Y + 0.56;
+const PHYSICS_EPSILON = 0.000001;
+const PHYSICS_CORNER_TOLERANCE = 0.00001;
+const PHYSICS_SURFACE_CLEARANCE = 0.0001;
+const MAX_COLLISIONS_PER_STEP = 8;
 
 export type Phase = 'ready' | 'playing' | 'cleared' | 'game-over';
 export type BrickKind = 'normal' | 'splitter' | 'autopilot' | 'life' | 'projector';
@@ -120,6 +127,7 @@ export type BallPathProjectionOptions = {
 };
 
 type BallSnapshot = BreakoutoutoutSnapshot['ball'];
+type BallState = BallSnapshot;
 
 type SplitRealitySnapshotOptions = {
   specialBrickKinds?: readonly SpecialBrickKind[];
@@ -140,16 +148,34 @@ export type BreakoutoutoutEvent =
   | { type: 'fatal-miss' }
   | { type: 'state-changed' };
 
-type Brick = BrickSnapshot & {
-  body?: RigidBody;
-  collider?: Collider;
-};
+type Brick = BrickSnapshot;
 
-type ProjectionCollisions = {
+type PhysicsAdvanceResult = {
   bricksToRemove: Set<Brick>;
   touchedFloor: boolean;
   touchedPaddle: boolean;
   touchedWall: boolean;
+  traveled: number;
+};
+
+type PhysicsCollisionTarget =
+  | { type: 'wall' }
+  | { type: 'floor' }
+  | { type: 'paddle' }
+  | { type: 'brick'; brick: Brick };
+
+type SweptBallHit = {
+  time: number;
+  normalX: number;
+  normalY: number;
+  targets: PhysicsCollisionTarget[];
+};
+
+type PhysicsRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 export function createSplitRealitySnapshot(
@@ -172,15 +198,7 @@ export function createSplitRealitySnapshot(
 export class BreakoutoutoutInstance {
   readonly id: number;
 
-  private readonly world: World;
-  private readonly eventQueue: EventQueue;
-  private readonly brickByCollider = new Map<number, Brick>();
-
-  private paddleBody!: RigidBody;
-  private paddleCollider!: Collider;
-  private ballBody!: RigidBody;
-  private ballCollider!: Collider;
-  private floorCollider!: Collider;
+  private ball!: BallState;
   private bricks: Brick[] = [];
   private score = 0;
   private lives = 3;
@@ -204,8 +222,6 @@ export class BreakoutoutoutInstance {
     this.persistentAutopilot = options.autopilot ?? false;
     this.sandbox = options.sandbox ?? false;
     this.specialBrickKinds = createSpecialBrickKindSet(options.specialBrickKinds);
-    this.world = new RAPIER.World({ x: 0, y: 0, z: 0 });
-    this.eventQueue = new RAPIER.EventQueue(false);
 
     if (snapshot) {
       this.score = snapshot.score;
@@ -222,8 +238,7 @@ export class BreakoutoutoutInstance {
       this.ballSpeedMultiplier = snapshot.ballSpeedMultiplier ?? 1;
     }
 
-    this.createRigidBodies(snapshot);
-    this.createWalls();
+    this.createPhysicsState(snapshot);
     this.createBricks(snapshot?.bricks);
 
     if (this.phase !== 'playing') {
@@ -250,13 +265,12 @@ export class BreakoutoutoutInstance {
       return events;
     }
 
-    this.world.timestep = delta;
-    this.world.step(this.eventQueue);
+    const collisions = this.advanceBall(delta);
     if (!this.persistentAutopilot) {
       this.autoPilotRemaining = Math.max(0, this.autoPilotRemaining - delta * this.gameSpeed);
     }
     this.pathProjectionRemaining = Math.max(0, this.pathProjectionRemaining - delta * this.gameSpeed);
-    events.push(...this.resolveCollisions());
+    events.push(...this.resolveCollisions(collisions));
     if (this.phase === 'playing') {
       events.push(...this.updateFatalMissPending());
     }
@@ -273,14 +287,8 @@ export class BreakoutoutoutInstance {
 
     this.phase = 'playing';
     this.readyRemaining = 0;
-    this.ballBody.setLinvel(
-      {
-        x: 0,
-        y: this.launchBallSpeed,
-        z: 0
-      },
-      true
-    );
+    this.ball.vx = 0;
+    this.ball.vy = this.launchBallSpeed;
 
     return [
       { type: 'sound', name: 'launch' },
@@ -301,8 +309,6 @@ export class BreakoutoutoutInstance {
     this.targetPaddleX = 0;
     this.autoPilotRemaining = 0;
     this.pathProjectionRemaining = 0;
-    this.paddleBody.setNextKinematicTranslation({ x: 0, y: PADDLE_Y, z: 0 });
-    this.paddleBody.setTranslation({ x: 0, y: PADDLE_Y, z: 0 }, true);
     this.clearRemainingBricks();
     this.createBricks();
     this.holdBallOnPaddle();
@@ -310,9 +316,6 @@ export class BreakoutoutoutInstance {
   }
 
   snapshot(): BreakoutoutoutSnapshot {
-    const ballPosition = this.ballBody.translation();
-    const ballVelocity = this.ballBody.linvel();
-
     return {
       score: this.score,
       lives: this.lives,
@@ -327,20 +330,12 @@ export class BreakoutoutoutInstance {
       pathProjectionRemaining: this.pathProjectionRemaining,
       pathProjectionActive: this.isPathProjectionActive,
       ballSpeedMultiplier: this.ballSpeedMultiplier,
-      ball: {
-        x: ballPosition.x,
-        y: ballPosition.y,
-        vx: ballVelocity.x,
-        vy: ballVelocity.y
-      },
+      ball: { ...this.ball },
       bricks: this.bricks.map(toBrickSnapshot)
     };
   }
 
   getRenderState(): BreakoutoutoutRenderState {
-    const ballPosition = this.ballBody.translation();
-    const ballVelocity = this.ballBody.linvel();
-
     return {
       id: this.id,
       score: this.score,
@@ -356,12 +351,7 @@ export class BreakoutoutoutInstance {
       pathProjectionRemaining: this.pathProjectionRemaining,
       pathProjectionActive: this.isPathProjectionActive,
       ballSpeedMultiplier: this.ballSpeedMultiplier,
-      ball: {
-        x: ballPosition.x,
-        y: ballPosition.y,
-        vx: ballVelocity.x,
-        vy: ballVelocity.y
-      },
+      ball: { ...this.ball },
       bricks: this.bricks
     };
   }
@@ -370,11 +360,12 @@ export class BreakoutoutoutInstance {
     this.rememberBallDirection();
     const factor = multiplier / this.ballSpeedMultiplier;
     this.ballSpeedMultiplier = multiplier;
-    const velocity = this.ballBody.linvel();
-    const speed = Math.hypot(velocity.x, velocity.y);
+    const speed = Math.hypot(this.ball.vx, this.ball.vy);
 
     if (speed > MIN_MOVING_BALL_SPEED) {
-      this.ballBody.setLinvel(this.capBallVelocity({ x: velocity.x * factor, y: velocity.y * factor }), true);
+      const velocity = this.capBallVelocity({ x: this.ball.vx * factor, y: this.ball.vy * factor });
+      this.ball.vx = velocity.x;
+      this.ball.vy = velocity.y;
     } else if (this.phase === 'playing' && this.gameSpeed > 0) {
       this.restoreBallVelocityFromDirection();
     }
@@ -398,17 +389,19 @@ export class BreakoutoutoutInstance {
       return;
     }
 
-    const velocity = this.ballBody.linvel();
-    const currentSpeed = Math.hypot(velocity.x, velocity.y);
+    const currentSpeed = Math.hypot(this.ball.vx, this.ball.vy);
 
     if (nextSpeed <= MIN_MOVING_BALL_SPEED) {
-      this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      this.ball.vx = 0;
+      this.ball.vy = 0;
       return;
     }
 
     if (currentSpeed > MIN_MOVING_BALL_SPEED && previousSpeed > MIN_MOVING_BALL_SPEED) {
       const factor = nextSpeed / previousSpeed;
-      this.ballBody.setLinvel(this.capBallVelocity({ x: velocity.x * factor, y: velocity.y * factor }), true);
+      const velocity = this.capBallVelocity({ x: this.ball.vx * factor, y: this.ball.vy * factor });
+      this.ball.vx = velocity.x;
+      this.ball.vy = velocity.y;
       return;
     }
 
@@ -475,90 +468,23 @@ export class BreakoutoutoutInstance {
 
   dispose(): void {
     this.clearRemainingBricks();
-    this.world.removeRigidBody(this.ballBody);
-    this.world.removeRigidBody(this.paddleBody);
-    this.world.free();
   }
 
-  private createRigidBodies(snapshot?: BreakoutoutoutSnapshot): void {
+  private createPhysicsState(snapshot?: BreakoutoutoutSnapshot): void {
     const paddleX = snapshot?.paddleX ?? 0;
     const ball = snapshot?.ball;
 
-    this.paddleBody = this.world.createRigidBody(
-      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(paddleX, PADDLE_Y, 0)
-    );
-    this.paddleCollider = this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(PADDLE_WIDTH / 2, PADDLE_HEIGHT / 2, PADDLE_DEPTH / 2)
-        .setRestitution(1)
-        .setFriction(0)
-        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS),
-      this.paddleBody
-    );
-
-    this.ballBody = this.world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(ball?.x ?? paddleX, ball?.y ?? PADDLE_Y + 0.55, 0)
-        .setLinvel(ball?.vx ?? 0, ball?.vy ?? 0, 0)
-        .setCcdEnabled(true)
-        .setCanSleep(false)
-    );
-    this.ballCollider = this.world.createCollider(
-      RAPIER.ColliderDesc.ball(BALL_RADIUS)
-        .setRestitution(1)
-        .setFriction(0)
-        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS),
-      this.ballBody
-    );
-  }
-
-  private createWalls(): void {
-    const walls = [
-      { x: -HALF_WIDTH - WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
-      { x: HALF_WIDTH + WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
-      { x: 0, y: HALF_HEIGHT + WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS },
-      { x: 0, y: -HALF_HEIGHT - WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS, isFloor: true }
-    ];
-
-    for (const wall of walls) {
-      const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(wall.x, wall.y, 0));
-      const collider = this.world.createCollider(
-        RAPIER.ColliderDesc.cuboid(wall.width / 2, wall.height / 2, PADDLE_DEPTH / 2)
-          .setRestitution(1)
-          .setFriction(0)
-          .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS),
-        body
-      );
-
-      if (wall.isFloor) {
-        this.floorCollider = collider;
-      }
-    }
+    this.ball = {
+      x: ball?.x ?? paddleX,
+      y: ball?.y ?? BALL_READY_Y,
+      vx: ball?.vx ?? 0,
+      vy: ball?.vy ?? 0
+    };
   }
 
   private createBricks(brickSnapshots?: BrickSnapshot[]): void {
     const snapshots = brickSnapshots ?? createFreshBrickSnapshots(this.specialBrickKinds);
     this.bricks = snapshots.map((snapshot) => ({ ...snapshot }));
-    this.brickByCollider.clear();
-
-    for (const brick of this.bricks) {
-      if (!brick.hit) {
-        this.attachBrickBody(brick);
-      }
-    }
-  }
-
-  private attachBrickBody(brick: Brick): void {
-    const body = this.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(brick.x, brick.y, 0));
-    const collider = this.world.createCollider(
-      RAPIER.ColliderDesc.cuboid(brick.width / 2, brick.height / 2, BRICK_DEPTH / 2)
-        .setRestitution(1)
-        .setFriction(0)
-        .setActiveEvents(RAPIER.ActiveEvents.COLLISION_EVENTS),
-      body
-    );
-    brick.body = body;
-    brick.collider = collider;
-    this.brickByCollider.set(collider.handle, brick);
   }
 
   private updatePaddle(delta: number, input: BreakoutInput): void {
@@ -570,8 +496,7 @@ export class BreakoutoutoutInstance {
     }
 
     if (this.phase === 'playing' && this.isPaddleAutopilotActive) {
-      const ballX = this.ballBody.translation().x;
-      const step = clamp(ballX - this.paddleX, -maxStep, maxStep);
+      const step = clamp(this.ball.x - this.paddleX, -maxStep, maxStep);
       this.setPaddlePosition(this.paddleX + step);
       return;
     }
@@ -609,17 +534,16 @@ export class BreakoutoutoutInstance {
   }
 
   private syncPaddleBody(): void {
-    this.paddleBody.setNextKinematicTranslation({ x: this.paddleX, y: PADDLE_Y, z: 0 });
-
     if (this.phase !== 'playing') {
-      this.paddleBody.setTranslation({ x: this.paddleX, y: PADDLE_Y, z: 0 }, true);
       this.holdBallOnPaddle();
     }
   }
 
   private holdBallOnPaddle(): void {
-    this.ballBody.setTranslation({ x: this.paddleX, y: PADDLE_Y + 0.56, z: 0 }, true);
-    this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+    this.ball.x = this.paddleX;
+    this.ball.y = BALL_READY_Y;
+    this.ball.vx = 0;
+    this.ball.vy = 0;
   }
 
   private setReadyPhase(): void {
@@ -632,7 +556,7 @@ export class BreakoutoutoutInstance {
     const nextPending = !this.sandbox
       && this.phase === 'playing'
       && this.lives === 1
-      && this.ballBody.translation().y < FATAL_MISS_Y;
+      && this.ball.y < FATAL_MISS_Y;
 
     if (nextPending === this.fatalMissPending) {
       return [];
@@ -644,53 +568,22 @@ export class BreakoutoutoutInstance {
       : [{ type: 'state-changed' }];
   }
 
-  private resolveCollisions(): BreakoutoutoutEvent[] {
+  private resolveCollisions(collisions: PhysicsAdvanceResult): BreakoutoutoutEvent[] {
     const events: BreakoutoutoutEvent[] = [];
-    const bricksToRemove = new Set<Brick>();
-    let touchedPaddle = false;
-    let touchedWall = false;
-    let touchedFloor = false;
 
-    this.eventQueue.drainCollisionEvents((handleA: number, handleB: number, started: boolean) => {
-      if (!started) {
-        return;
-      }
-
-      const hasBall = handleA === this.ballCollider.handle || handleB === this.ballCollider.handle;
-      if (!hasBall) {
-        return;
-      }
-
-      const otherHandle = handleA === this.ballCollider.handle ? handleB : handleA;
-      const brick = this.brickByCollider.get(otherHandle);
-      if (brick && !brick.hit) {
-        bricksToRemove.add(brick);
-        return;
-      }
-
-      if (otherHandle === this.floorCollider.handle) {
-        touchedFloor = true;
-      } else if (otherHandle === this.paddleCollider.handle) {
-        touchedPaddle = true;
-      } else {
-        touchedWall = true;
-      }
-    });
-
-    if (touchedFloor) {
+    if (collisions.touchedFloor) {
       return this.loseLife();
     }
 
-    if (touchedPaddle) {
-      this.applyPaddleBounce();
+    if (collisions.touchedPaddle) {
       events.push({ type: 'sound', name: 'paddle' });
     }
 
-    if (touchedWall && bricksToRemove.size === 0) {
+    if (collisions.touchedWall && collisions.bricksToRemove.size === 0) {
       events.push({ type: 'sound', name: 'wall' });
     }
 
-    for (const brick of bricksToRemove) {
+    for (const brick of collisions.bricksToRemove) {
       events.push(...this.removeBrick(brick));
     }
 
@@ -704,7 +597,7 @@ export class BreakoutoutoutInstance {
     const maxBounces = Math.max(1, Math.floor(options.maxBounces ?? Number.POSITIVE_INFINITY));
     const sampleSpacing = Math.max(options.sampleSpacing ?? BALL_RADIUS, MIN_MOVING_BALL_SPEED);
     const input = options.input ?? { left: false, right: false };
-    const start = this.ballBody.translation();
+    const start = this.ball;
     const points: BallPathProjectionPoint[] = [{ x: start.x, y: start.y }];
     let lastSampleX = start.x;
     let lastSampleY = start.y;
@@ -716,14 +609,11 @@ export class BreakoutoutoutInstance {
         break;
       }
 
-      const previous = this.ballBody.translation();
+      const previous = { x: this.ball.x, y: this.ball.y };
       this.updatePaddle(FIXED_STEP, input);
-      this.world.timestep = FIXED_STEP;
-      this.world.step(this.eventQueue);
-
-      const collisions = this.collectProjectionCollisions();
-      const current = this.ballBody.translation();
-      const stepDistance = Math.hypot(current.x - previous.x, current.y - previous.y);
+      const collisions = this.advanceBall(FIXED_STEP);
+      const current = this.ball;
+      const stepDistance = collisions.traveled || Math.hypot(current.x - previous.x, current.y - previous.y);
       traveled += stepDistance;
 
       const shouldStop = collisions.touchedFloor || collisions.touchedPaddle || traveled >= maxDistance;
@@ -754,67 +644,236 @@ export class BreakoutoutoutInstance {
     return points.length > 1 ? points : [];
   }
 
-  private collectProjectionCollisions(): ProjectionCollisions {
-    const collisions: ProjectionCollisions = {
+  private advanceBall(delta: number): PhysicsAdvanceResult {
+    const result: PhysicsAdvanceResult = {
       bricksToRemove: new Set<Brick>(),
       touchedFloor: false,
       touchedPaddle: false,
-      touchedWall: false
+      touchedWall: false,
+      traveled: 0
     };
+    let remaining = delta;
 
-    this.eventQueue.drainCollisionEvents((handleA: number, handleB: number, started: boolean) => {
-      if (!started) {
-        return;
+    for (let collisionCount = 0; collisionCount < MAX_COLLISIONS_PER_STEP && remaining > PHYSICS_EPSILON; collisionCount += 1) {
+      const speed = this.currentBallSpeed;
+      if (speed <= MIN_MOVING_BALL_SPEED) {
+        break;
       }
 
-      const hasBall = handleA === this.ballCollider.handle || handleB === this.ballCollider.handle;
-      if (!hasBall) {
-        return;
+      const hit = this.findNearestBallHit(remaining, result.bricksToRemove);
+      if (!hit) {
+        this.ball.x += this.ball.vx * remaining;
+        this.ball.y += this.ball.vy * remaining;
+        result.traveled += speed * remaining;
+        break;
       }
 
-      const otherHandle = handleA === this.ballCollider.handle ? handleB : handleA;
-      const brick = this.brickByCollider.get(otherHandle);
-      if (brick && !brick.hit) {
-        collisions.bricksToRemove.add(brick);
-        return;
+      const travelTime = Math.max(0, hit.time);
+      this.ball.x += this.ball.vx * travelTime;
+      this.ball.y += this.ball.vy * travelTime;
+      result.traveled += speed * travelTime;
+      remaining = Math.max(0, remaining - travelTime);
+
+      let hitFloor = false;
+      let hitPaddle = false;
+      for (const target of hit.targets) {
+        if (target.type === 'floor') {
+          hitFloor = true;
+          result.touchedFloor = true;
+        } else if (target.type === 'paddle') {
+          hitPaddle = true;
+          result.touchedPaddle = true;
+        } else if (target.type === 'wall') {
+          result.touchedWall = true;
+        } else if (!target.brick.hit) {
+          result.bricksToRemove.add(target.brick);
+        }
       }
 
-      if (otherHandle === this.floorCollider.handle) {
-        collisions.touchedFloor = true;
-      } else if (otherHandle === this.paddleCollider.handle) {
-        collisions.touchedPaddle = true;
+      if (hitFloor) {
+        this.ball.x = clamp(this.ball.x, PLAYFIELD_LEFT, PLAYFIELD_RIGHT);
+        this.ball.y = PLAYFIELD_BOTTOM;
+        break;
+      }
+
+      if (hitPaddle) {
+        this.applyPaddleBounce();
       } else {
-        collisions.touchedWall = true;
+        this.reflectBall(hit.normalX, hit.normalY);
+        this.separateBallFromSurface(hit.normalX, hit.normalY);
       }
-    });
+    }
 
-    return collisions;
+    return result;
+  }
+
+  private findNearestBallHit(maxTime: number, ignoredBricks: ReadonlySet<Brick>): SweptBallHit | null {
+    let nearest = this.findNearestWallHit(maxTime);
+    nearest = mergeSweptBallHit(nearest, this.sweptRectHit(
+      {
+        x: this.paddleX,
+        y: PADDLE_Y,
+        width: PADDLE_WIDTH,
+        height: PADDLE_HEIGHT
+      },
+      { type: 'paddle' },
+      maxTime
+    ));
+
+    for (const brick of this.bricks) {
+      if (brick.hit || ignoredBricks.has(brick)) {
+        continue;
+      }
+
+      nearest = mergeSweptBallHit(nearest, this.sweptRectHit(brick, { type: 'brick', brick }, maxTime));
+    }
+
+    return nearest;
+  }
+
+  private findNearestWallHit(maxTime: number): SweptBallHit | null {
+    let nearest: SweptBallHit | null = null;
+
+    if (this.ball.vx < -PHYSICS_EPSILON) {
+      nearest = mergeSweptBallHit(nearest, createAxisHit(
+        (PLAYFIELD_LEFT - this.ball.x) / this.ball.vx,
+        1,
+        0,
+        { type: 'wall' },
+        maxTime
+      ));
+    } else if (this.ball.vx > PHYSICS_EPSILON) {
+      nearest = mergeSweptBallHit(nearest, createAxisHit(
+        (PLAYFIELD_RIGHT - this.ball.x) / this.ball.vx,
+        -1,
+        0,
+        { type: 'wall' },
+        maxTime
+      ));
+    }
+
+    if (this.ball.vy > PHYSICS_EPSILON) {
+      nearest = mergeSweptBallHit(nearest, createAxisHit(
+        (PLAYFIELD_TOP - this.ball.y) / this.ball.vy,
+        0,
+        -1,
+        { type: 'wall' },
+        maxTime
+      ));
+    } else if (this.ball.vy < -PHYSICS_EPSILON) {
+      nearest = mergeSweptBallHit(nearest, createAxisHit(
+        (PLAYFIELD_BOTTOM - this.ball.y) / this.ball.vy,
+        0,
+        1,
+        { type: 'floor' },
+        maxTime
+      ));
+    }
+
+    return nearest;
+  }
+
+  private sweptRectHit(rect: PhysicsRect, target: PhysicsCollisionTarget, maxTime: number): SweptBallHit | null {
+    const minX = rect.x - rect.width / 2 - BALL_RADIUS;
+    const maxX = rect.x + rect.width / 2 + BALL_RADIUS;
+    const minY = rect.y - rect.height / 2 - BALL_RADIUS;
+    const maxY = rect.y + rect.height / 2 + BALL_RADIUS;
+    let entryTime = Number.NEGATIVE_INFINITY;
+    let exitTime = Number.POSITIVE_INFINITY;
+    let normalX = 0;
+    let normalY = 0;
+
+    if (Math.abs(this.ball.vx) <= PHYSICS_EPSILON) {
+      if (this.ball.x < minX || this.ball.x > maxX) {
+        return null;
+      }
+    } else {
+      const nearX = (minX - this.ball.x) / this.ball.vx;
+      const farX = (maxX - this.ball.x) / this.ball.vx;
+      const xEntry = Math.min(nearX, farX);
+      const xExit = Math.max(nearX, farX);
+      const xNormal = nearX > farX ? 1 : -1;
+      if (xEntry > entryTime + PHYSICS_CORNER_TOLERANCE) {
+        entryTime = xEntry;
+        normalX = xNormal;
+        normalY = 0;
+      } else if (Math.abs(xEntry - entryTime) <= PHYSICS_CORNER_TOLERANCE) {
+        normalX = xNormal;
+      }
+      exitTime = Math.min(exitTime, xExit);
+    }
+
+    if (Math.abs(this.ball.vy) <= PHYSICS_EPSILON) {
+      if (this.ball.y < minY || this.ball.y > maxY) {
+        return null;
+      }
+    } else {
+      const nearY = (minY - this.ball.y) / this.ball.vy;
+      const farY = (maxY - this.ball.y) / this.ball.vy;
+      const yEntry = Math.min(nearY, farY);
+      const yExit = Math.max(nearY, farY);
+      const yNormal = nearY > farY ? 1 : -1;
+      if (yEntry > entryTime + PHYSICS_CORNER_TOLERANCE) {
+        entryTime = yEntry;
+        normalX = 0;
+        normalY = yNormal;
+      } else if (Math.abs(yEntry - entryTime) <= PHYSICS_CORNER_TOLERANCE) {
+        normalY = yNormal;
+      }
+      exitTime = Math.min(exitTime, yExit);
+    }
+
+    if (
+      entryTime > exitTime
+      || entryTime <= PHYSICS_EPSILON
+      || entryTime - maxTime > PHYSICS_CORNER_TOLERANCE
+    ) {
+      return null;
+    }
+
+    return {
+      time: entryTime,
+      normalX,
+      normalY,
+      targets: [target]
+    };
+  }
+
+  private reflectBall(normalX: number, normalY: number): void {
+    if (normalX !== 0) {
+      this.ball.vx *= -1;
+    }
+    if (normalY !== 0) {
+      this.ball.vy *= -1;
+    }
+  }
+
+  private separateBallFromSurface(normalX: number, normalY: number): void {
+    this.ball.x = clamp(
+      this.ball.x + normalX * PHYSICS_SURFACE_CLEARANCE,
+      PLAYFIELD_LEFT,
+      PLAYFIELD_RIGHT
+    );
+    this.ball.y = clamp(
+      this.ball.y + normalY * PHYSICS_SURFACE_CLEARANCE,
+      PLAYFIELD_BOTTOM,
+      PLAYFIELD_TOP
+    );
   }
 
   private applyPaddleBounce(): void {
-    const ballPosition = this.ballBody.translation();
-    const centeredOffset = (ballPosition.x - this.paddleX) / (PADDLE_WIDTH / 2);
+    const centeredOffset = (this.ball.x - this.paddleX) / (PADDLE_WIDTH / 2);
     const offset = this.paddleBounceOffset(centeredOffset);
     const speed = this.capBallSpeed(Math.max(this.paddleBounceBallSpeed, this.currentBallSpeed));
     const angle = offset * 1.04;
-    this.ballBody.setLinvel({ x: Math.sin(angle) * speed, y: Math.cos(angle) * speed, z: 0 }, true);
-    this.ballBody.setTranslation({ x: ballPosition.x, y: Math.max(ballPosition.y, PADDLE_Y + 0.52), z: 0 }, true);
+    this.ball.vx = Math.sin(angle) * speed;
+    this.ball.vy = Math.cos(angle) * speed;
+    this.ball.y = Math.max(this.ball.y, PADDLE_Y + PADDLE_HEIGHT / 2 + BALL_RADIUS + PHYSICS_SURFACE_CLEARANCE);
   }
 
   private removeBrick(brick: Brick): BreakoutoutoutEvent[] {
     const events: BreakoutoutoutEvent[] = [];
     brick.hit = true;
-
-    if (brick.collider) {
-      this.brickByCollider.delete(brick.collider.handle);
-    }
-
-    if (brick.body) {
-      this.world.removeRigidBody(brick.body);
-    }
-
-    brick.body = undefined;
-    brick.collider = undefined;
     this.score += brick.points;
 
     events.push({
@@ -866,33 +925,21 @@ export class BreakoutoutoutInstance {
       }
 
       brick.hit = true;
-      if (brick.collider) {
-        this.brickByCollider.delete(brick.collider.handle);
-      }
-
-      if (brick.body) {
-        this.world.removeRigidBody(brick.body);
-      }
-
-      brick.body = undefined;
-      brick.collider = undefined;
     }
   }
 
   private keepBallPlanar(): void {
-    const position = this.ballBody.translation();
-    const velocity = this.ballBody.linvel();
     const speed = this.capBallSpeed(Math.max(this.currentBallSpeed, this.minimumBallSpeed));
 
     if (speed <= MIN_MOVING_BALL_SPEED) {
-      this.ballBody.setTranslation({ x: position.x, y: position.y, z: 0 }, true);
-      this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      this.ball.vx = 0;
+      this.ball.vy = 0;
       return;
     }
 
-    const planarSpeed = Math.hypot(velocity.x, velocity.y) || speed;
-    let normalizedX = velocity.x / planarSpeed;
-    let normalizedY = velocity.y / planarSpeed;
+    const planarSpeed = this.currentBallSpeed || speed;
+    let normalizedX = this.ball.vx / planarSpeed;
+    let normalizedY = this.ball.vy / planarSpeed;
     if (Math.abs(normalizedY) < MIN_BALL_VERTICAL_DIRECTION) {
       normalizedY = Math.sign(normalizedY || 1) * MIN_BALL_VERTICAL_DIRECTION;
       normalizedX = Math.sign(normalizedX || this.lastBallDirectionX || 1)
@@ -901,15 +948,10 @@ export class BreakoutoutoutInstance {
     this.lastBallDirectionX = normalizedX;
     this.lastBallDirectionY = normalizedY;
 
-    this.ballBody.setTranslation({ x: position.x, y: position.y, z: 0 }, true);
-    this.ballBody.setLinvel(
-      {
-        x: normalizedX * speed,
-        y: normalizedY * speed,
-        z: 0
-      },
-      true
-    );
+    this.ball.x = clamp(this.ball.x, PLAYFIELD_LEFT, PLAYFIELD_RIGHT);
+    this.ball.y = Math.min(this.ball.y, PLAYFIELD_TOP);
+    this.ball.vx = normalizedX * speed;
+    this.ball.vy = normalizedY * speed;
   }
 
   private loseLife(): BreakoutoutoutEvent[] {
@@ -940,15 +982,7 @@ export class BreakoutoutoutInstance {
   }
 
   private clearRemainingBricks(): void {
-    for (const brick of this.bricks) {
-      if (!brick.hit && brick.body) {
-        this.world.removeRigidBody(brick.body);
-      }
-      brick.body = undefined;
-      brick.collider = undefined;
-    }
     this.bricks = [];
-    this.brickByCollider.clear();
   }
 
   private get minPaddleX(): number {
@@ -960,8 +994,7 @@ export class BreakoutoutoutInstance {
   }
 
   private get currentBallSpeed(): number {
-    const velocity = this.ballBody.linvel();
-    return Math.hypot(velocity.x, velocity.y);
+    return Math.hypot(this.ball.vx, this.ball.vy);
   }
 
   private get launchBallSpeed(): number {
@@ -1016,44 +1049,38 @@ export class BreakoutoutoutInstance {
   }
 
   private rememberBallDirection(): void {
-    const velocity = this.ballBody.linvel();
-    const speed = Math.hypot(velocity.x, velocity.y);
+    const speed = Math.hypot(this.ball.vx, this.ball.vy);
 
     if (speed <= MIN_MOVING_BALL_SPEED) {
       return;
     }
 
-    this.lastBallDirectionX = velocity.x / speed;
-    this.lastBallDirectionY = velocity.y / speed;
+    this.lastBallDirectionX = this.ball.vx / speed;
+    this.lastBallDirectionY = this.ball.vy / speed;
   }
 
   private restoreBallVelocityFromDirection(): void {
     const speed = this.minimumBallSpeed;
     if (speed <= MIN_MOVING_BALL_SPEED) {
-      this.ballBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      this.ball.vx = 0;
+      this.ball.vy = 0;
       return;
     }
 
-    this.ballBody.setLinvel(
-      {
-        x: this.lastBallDirectionX * speed,
-        y: this.lastBallDirectionY * speed,
-        z: 0
-      },
-      true
-    );
+    this.ball.vx = this.lastBallDirectionX * speed;
+    this.ball.vy = this.lastBallDirectionY * speed;
   }
 
-  private capBallVelocity(velocity: { x: number; y: number }): { x: number; y: number; z: 0 } {
+  private capBallVelocity(velocity: { x: number; y: number }): { x: number; y: number } {
     const speed = Math.hypot(velocity.x, velocity.y);
     const cappedSpeed = this.capBallSpeed(speed);
 
     if (speed <= MIN_MOVING_BALL_SPEED || cappedSpeed === speed) {
-      return { x: velocity.x, y: velocity.y, z: 0 };
+      return { x: velocity.x, y: velocity.y };
     }
 
     const scale = cappedSpeed / speed;
-    return { x: velocity.x * scale, y: velocity.y * scale, z: 0 };
+    return { x: velocity.x * scale, y: velocity.y * scale };
   }
 
   private capBallSpeed(speed: number): number {
@@ -1063,6 +1090,46 @@ export class BreakoutoutoutInstance {
 
     return Math.min(speed, this.maximumBallSpeed);
   }
+}
+
+function createAxisHit(
+  time: number,
+  normalX: number,
+  normalY: number,
+  target: PhysicsCollisionTarget,
+  maxTime: number
+): SweptBallHit | null {
+  if (time <= PHYSICS_EPSILON || time - maxTime > PHYSICS_CORNER_TOLERANCE) {
+    return null;
+  }
+
+  return {
+    time,
+    normalX,
+    normalY,
+    targets: [target]
+  };
+}
+
+function mergeSweptBallHit(current: SweptBallHit | null, candidate: SweptBallHit | null): SweptBallHit | null {
+  if (!candidate) {
+    return current;
+  }
+
+  if (!current || candidate.time < current.time - PHYSICS_CORNER_TOLERANCE) {
+    return candidate;
+  }
+
+  if (Math.abs(candidate.time - current.time) <= PHYSICS_CORNER_TOLERANCE) {
+    return {
+      time: Math.min(current.time, candidate.time),
+      normalX: current.normalX || candidate.normalX,
+      normalY: current.normalY || candidate.normalY,
+      targets: [...current.targets, ...candidate.targets]
+    };
+  }
+
+  return current;
 }
 
 function createFreshBrickSnapshots(specialBrickKinds: ReadonlySet<SpecialBrickKind>): BrickSnapshot[] {
@@ -1529,8 +1596,7 @@ function shuffle<T>(items: T[], random: () => number): T[] {
 }
 
 function toBrickSnapshot(brick: Brick): BrickSnapshot {
-  const { body: _body, collider: _collider, ...snapshot } = brick;
-  return snapshot;
+  return { ...brick };
 }
 
 function createSpecialBrickKindSet(kinds: readonly SpecialBrickKind[] | undefined): ReadonlySet<SpecialBrickKind> {
