@@ -83,6 +83,30 @@ const SPLIT_PLANE_TRAVEL_DURATION = 0.82;
 const SPLIT_PLANE_SPAWN_Z_OFFSET = 0.36;
 const SPLIT_BLOOM_DURATION = 1.2;
 const SPLIT_GLOW_BASE_OPACITY = 0.3;
+const VHS_GLITCH_LEVEL_STEP = 0.01;
+const VHS_GLITCH_BASE_INTENSITY = 0.06;
+const VHS_GLITCH_MAX_INTENSITY = 0.92;
+const VHS_GLITCH_TEXTURE_WIDTH = 192;
+const VHS_GLITCH_TEXTURE_HEIGHT = 256;
+const VHS_GLITCH_TEXTURE_FPS = 18;
+const VHS_GLITCH_WORLD_WIDTH = BOARD_WIDTH - WALL_THICKNESS * 0.5;
+const VHS_GLITCH_WORLD_HEIGHT = BOARD_HEIGHT - WALL_THICKNESS * 0.5;
+const VHS_GLITCH_WORLD_Z = 0.04;
+const VHS_GLITCH_RENDER_ORDER = 79;
+const VHS_GLITCH_STATIC_ALPHA = 0.62;
+const VHS_GLITCH_BAND_ALPHA = 0.34;
+const VHS_GLITCH_BAND_COUNT_SCALE = 0.25;
+const VHS_GLITCH_TRACKING_WIDTH = 1.05;
+const VHS_GLITCH_MESH_TEAR_X = 0.36;
+const VHS_GLITCH_MESH_WOBBLE_X = 0.075;
+const VHS_GLITCH_CHROMA_COLORS = [
+  [56, 189, 248],
+  [244, 114, 182],
+  [250, 204, 21],
+  [45, 212, 191],
+  [167, 139, 250],
+  [251, 113, 133]
+] as const;
 const BALL_SPEED_ACTIVE_GAME_SCALE = 0.5;
 const DEFAULT_BALL_SPEED_MULTIPLIER_ACTIVE_GAME_CAP = 4;
 const BALL_SPEED_MULTIPLIER_TWEEN_DURATION = 2;
@@ -503,6 +527,7 @@ type InstanceView = {
   paddleMesh: THREE.Mesh;
   ballMesh: THREE.Mesh;
   trajectoryProjection: TrajectoryProjection;
+  vhsGlitch: VhsGlitchPlane;
   wallMeshes: THREE.Mesh[];
   bricks: Map<string, THREE.Mesh>;
   activeBrickIds: Set<string>;
@@ -513,6 +538,7 @@ type InstanceView = {
   restartButtonText: HudTextPlane;
   leaderboardPanel: LeaderboardPanelPlane;
   renderState: BreakoutoutoutRenderState;
+  glitchLevel: number;
   trajectoryProjectionCache: TrajectoryProjectionCache | null;
   appliedOpacity: number;
   targetOpacity: number;
@@ -568,6 +594,7 @@ export class BreakoutGame {
   private readonly instanceSoundPosition = new THREE.Vector3();
   private readonly instances: BreakoutoutoutInstance[] = [];
   private readonly views = new Set<InstanceView>();
+  private readonly instanceGlitchLevels = new Map<BreakoutoutoutInstance, number>();
   private readonly pendingSplits: PendingSplit[] = [];
   private readonly splitBloomPulses: SplitBloomPulse[] = [];
   private readonly splitGlowActiveInstances = new Set<BreakoutoutoutInstance>();
@@ -578,6 +605,7 @@ export class BreakoutGame {
   private projectorDebugAngle = 0;
   private projectorDebugBricks: BrickSnapshot[] = [];
   private projectorDebugTestBall: ProjectorDebugBall | null = null;
+  private nextGlitchLevel = 1;
 
   private nebula: NebulaRuntime | null = null;
   private accumulator = 0;
@@ -849,6 +877,7 @@ export class BreakoutGame {
       if (launchImmediately && !this.projectorDebug) {
         instance.launchOrAdvance();
       }
+      this.instanceGlitchLevels.set(instance, 0);
       this.addInstance(instance);
       this.nextInstanceId += 1;
     }
@@ -899,6 +928,9 @@ export class BreakoutGame {
   private addInstance(instance: BreakoutoutoutInstance, insertIndex = this.instances.length): InstanceView {
     const previousInstanceCount = this.instances.length;
     const nextIndex = clamp(Math.floor(insertIndex), 0, previousInstanceCount);
+    if (!this.instanceGlitchLevels.has(instance)) {
+      this.instanceGlitchLevels.set(instance, 0);
+    }
     this.instances.splice(nextIndex, 0, instance);
     if (previousInstanceCount > 0 && nextIndex <= this.selectedIndex) {
       this.selectedIndex += 1;
@@ -922,6 +954,7 @@ export class BreakoutGame {
     const paddleMesh = this.createPaddleMesh();
     const ballMesh = this.createBallMesh();
     const trajectoryProjection = new TrajectoryProjection();
+    const vhsGlitch = new VhsGlitchPlane();
     const scoreText = this.createPlaneScoreText();
     const hearts = new HudHeartsPlane({ renderOrder: PLANE_HUD_RENDER_ORDER });
     const statusText = this.createPlaneStatusText();
@@ -938,6 +971,7 @@ export class BreakoutGame {
       trajectoryProjection.mesh,
       paddleMesh,
       ballMesh,
+      vhsGlitch.mesh,
       scoreText.mesh,
       hearts.mesh,
       statusText.mesh,
@@ -952,6 +986,7 @@ export class BreakoutGame {
       paddleMesh,
       ballMesh,
       trajectoryProjection,
+      vhsGlitch,
       wallMeshes,
       bricks,
       activeBrickIds,
@@ -962,6 +997,7 @@ export class BreakoutGame {
       restartButtonText,
       leaderboardPanel,
       renderState: state,
+      glitchLevel: this.glitchLevelForInstance(instance),
       trajectoryProjectionCache: null,
       appliedOpacity: Number.NaN,
       targetOpacity: Number.NaN,
@@ -1071,6 +1107,7 @@ export class BreakoutGame {
         wallMaterial.clone()
       );
       mesh.position.set(wall.x, wall.y, -0.04);
+      setVhsBasePosition(mesh);
       splitGlowMeshes.push(this.attachSplitGlow(mesh, 0x8ce9df, { baseScale: 1.02, pulseScale: 0.08 }));
       wallMeshes.push(mesh);
       group.add(mesh);
@@ -1821,10 +1858,12 @@ export class BreakoutGame {
       instance.dispose();
     }
     this.instances.length = 0;
+    this.instanceGlitchLevels.clear();
 
     this.accumulator = 0;
     this.lastTime = performance.now();
     this.nextInstanceId = 1;
+    this.nextGlitchLevel = 1;
     this.selectedIndex = 0;
     this.selectedTrackIndex = 0;
     this.lastAutopilotSelectionChangeTime = Number.NEGATIVE_INFINITY;
@@ -2349,6 +2388,9 @@ export class BreakoutGame {
       createSplitRealitySnapshot(pending.snapshot, { specialBrickKinds: cloneOptions.specialBrickKinds }),
       cloneOptions
     );
+    const cloneGlitchLevel = Math.max(this.glitchLevelForInstance(pending.source) + 1, this.nextGlitchLevel);
+    this.instanceGlitchLevels.set(clone, cloneGlitchLevel);
+    this.nextGlitchLevel = cloneGlitchLevel + 1;
     this.nextInstanceId += 1;
     if (sourceTrackIndex < this.selectedTrackIndex) {
       this.selectedTrackIndex += 1;
@@ -2383,6 +2425,10 @@ export class BreakoutGame {
       ...this.instanceOptions,
       autopilot: source.hasPersistentAutopilot()
     };
+  }
+
+  private glitchLevelForInstance(instance: BreakoutoutoutInstance): number {
+    return this.instanceGlitchLevels.get(instance) ?? 0;
   }
 
   private updateGameSpeedTween(delta: number): void {
@@ -2708,6 +2754,7 @@ export class BreakoutGame {
 
   private syncInstanceView(view: InstanceView, state: BreakoutoutoutRenderState, time: number): void {
     const terminal = isTerminalPhase(state.phase);
+    view.glitchLevel = this.glitchLevelForInstance(view.instance);
 
     view.paddleMesh.position.set(state.paddleX, PADDLE_Y, 0.06);
     this.updatePaddleAutopilotEffect(
@@ -2722,7 +2769,8 @@ export class BreakoutGame {
     view.trajectoryProjection.update(
       this.trajectoryProjectionPathForView(view, state, terminal),
       time,
-      this.projectorBeamSettings
+      this.projectorBeamSettings,
+      view.glitchLevel
     );
     this.applyMeshOpacity(view, view.trajectoryProjection.mesh);
     this.updatePlaneCornerHud(view, state);
@@ -2760,11 +2808,51 @@ export class BreakoutGame {
       }
 
       mesh.position.set(brick.x, brick.y, Math.sin(time * 1.5 + brick.x * 0.7) * 0.035);
+      this.applyVhsDynamicMeshDistortion(view, mesh, brick.y, time);
     }
 
+    this.applyVhsDynamicMeshDistortion(view, view.paddleMesh, PADDLE_Y, time);
+    this.applyVhsDynamicMeshDistortion(view, view.ballMesh, state.ball.y, time);
+    this.updateVhsStaticMeshDistortion(view, time);
     this.applyInstancePlayStateVisuals(view, terminal);
     this.updateFatalMissGreyscaleVisuals(view, this.shouldGreyscaleForFatalMiss(view), terminal, time);
     this.updateDangerVisuals(view, state.fatalMissPending && !terminal, terminal, time);
+    this.updateVhsGlitch(view, time);
+  }
+
+  private applyVhsDynamicMeshDistortion(
+    view: InstanceView,
+    mesh: THREE.Mesh | THREE.InstancedMesh,
+    y: number,
+    time: number
+  ): void {
+    const intensity = vhsGlitchIntensityForLevel(view.glitchLevel);
+    if (intensity <= 0) {
+      return;
+    }
+
+    mesh.position.x += vhsMeshTearOffset(y, time, view.glitchLevel, intensity);
+  }
+
+  private updateVhsStaticMeshDistortion(view: InstanceView, time: number): void {
+    const intensity = vhsGlitchIntensityForLevel(view.glitchLevel);
+
+    for (const mesh of view.wallMeshes) {
+      const base = vhsBasePosition(mesh);
+      mesh.position.copy(base);
+
+      if (intensity <= 0) {
+        continue;
+      }
+
+      mesh.position.x += vhsMeshTearOffset(base.y, time, view.glitchLevel, intensity);
+    }
+  }
+
+  private updateVhsGlitch(view: InstanceView, time: number): void {
+    view.glitchLevel = this.glitchLevelForInstance(view.instance);
+    const opacity = Number.isFinite(view.appliedOpacity) ? view.appliedOpacity : this.targetOpacityForView(view);
+    view.vhsGlitch.update(time, view.glitchLevel, opacity);
   }
 
   private trajectoryProjectionPathForView(
@@ -3021,7 +3109,7 @@ export class BreakoutGame {
 
     view.fatalGreyscaleApplied = true;
     view.group.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
+      if (object instanceof THREE.Mesh && object.userData.vhsGlitch !== true) {
         setMaterialGreyscale(object.material, true);
       }
     });
@@ -3040,7 +3128,7 @@ export class BreakoutGame {
     const intensity = 0.48 + pulse * 0.52;
     view.dangerVisualsApplied = true;
     view.group.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
+      if (object instanceof THREE.Mesh && object.userData.vhsGlitch !== true) {
         setMaterialDanger(object.material, intensity);
       }
     });
@@ -3049,7 +3137,7 @@ export class BreakoutGame {
   private restoreFatalMissGreyscaleVisuals(view: InstanceView, terminal: boolean, time: number): void {
     const greyscale = terminal || this.shouldGreyscaleForFatalMiss(view);
     view.group.traverse((object) => {
-      if (object instanceof THREE.Mesh) {
+      if (object instanceof THREE.Mesh && object.userData.vhsGlitch !== true) {
         setMaterialGreyscale(object.material, greyscale);
       }
     });
@@ -3179,6 +3267,7 @@ export class BreakoutGame {
   }
 
   private disposePlaneView(view: InstanceView): void {
+    view.vhsGlitch.dispose();
     this.scene.remove(view.group);
     disposeObject(view.group);
   }
@@ -3456,7 +3545,7 @@ export class BreakoutGame {
   }
 
   private applyMeshOpacity(view: InstanceView, mesh: THREE.Mesh): void {
-    if (mesh.userData.splitGlow === true) {
+    if (mesh.userData.splitGlow === true || mesh.userData.vhsGlitch === true) {
       return;
     }
 
@@ -3840,6 +3929,170 @@ function overlapsProjectorDebugBrick(candidate: BrickSnapshot, bricks: readonly 
   });
 }
 
+class VhsGlitchPlane {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+
+  private readonly canvas: HTMLCanvasElement;
+  private readonly context: CanvasRenderingContext2D;
+  private readonly texture: THREE.CanvasTexture;
+  private readonly material: THREE.MeshBasicMaterial;
+  private lastFrame = -1;
+
+  constructor() {
+    const canvas = document.createElement('canvas');
+    canvas.width = VHS_GLITCH_TEXTURE_WIDTH;
+    canvas.height = VHS_GLITCH_TEXTURE_HEIGHT;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create VHS glitch canvas.');
+    }
+
+    this.canvas = canvas;
+    this.context = context;
+    this.texture = createHudCanvasTexture(canvas);
+    this.texture.minFilter = THREE.NearestFilter;
+    this.texture.magFilter = THREE.NearestFilter;
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false
+    });
+    this.mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(VHS_GLITCH_WORLD_WIDTH, VHS_GLITCH_WORLD_HEIGHT),
+      this.material
+    );
+    this.mesh.position.set(0, 0, VHS_GLITCH_WORLD_Z);
+    this.mesh.renderOrder = VHS_GLITCH_RENDER_ORDER;
+    this.mesh.frustumCulled = false;
+    this.mesh.visible = false;
+    this.mesh.userData.vhsGlitch = true;
+  }
+
+  update(time: number, level: number, viewOpacity: number): void {
+    const intensity = vhsGlitchIntensityForLevel(level);
+    const opacity = clamp(viewOpacity, 0, 1);
+    if (intensity <= 0 || opacity <= 0.002) {
+      this.mesh.visible = false;
+      return;
+    }
+
+    this.mesh.visible = true;
+    this.material.opacity = opacity;
+
+    const frame = Math.floor(time * VHS_GLITCH_TEXTURE_FPS + level * 11);
+    if (frame === this.lastFrame) {
+      return;
+    }
+
+    this.lastFrame = frame;
+    this.drawFrame(time, level, intensity);
+  }
+
+  dispose(): void {
+    this.texture.dispose();
+    this.material.dispose();
+    this.mesh.geometry.dispose();
+  }
+
+  private drawFrame(time: number, level: number, intensity: number): void {
+    const { width, height } = this.canvas;
+    const context = this.context;
+    context.clearRect(0, 0, width, height);
+    this.drawStatic(intensity);
+    this.drawScanlineNoise(level, intensity);
+    this.drawTearBands(level, intensity);
+    this.drawTrackingBar(time, level, intensity);
+    this.texture.needsUpdate = true;
+  }
+
+  private drawStatic(intensity: number): void {
+    const { width, height } = this.canvas;
+    const imageData = this.context.createImageData(width, height);
+    const data = imageData.data;
+    const density = 0.018 + intensity * 0.16;
+
+    for (let y = 0; y < height; y += 1) {
+      const rowDensity = density * (0.58 + Math.random() * 0.84);
+      for (let x = 0; x < width; x += 1) {
+        if (Math.random() > rowDensity) {
+          continue;
+        }
+
+        const offset = (y * width + x) * 4;
+        const color = randomVhsChromaColor();
+        const dim = 0.42 + Math.random() * 0.86;
+        const whiteMix = Math.random() * 0.3;
+        data[offset] = clampByte(color[0] * dim + 255 * whiteMix);
+        data[offset + 1] = clampByte(color[1] * dim + 255 * whiteMix);
+        data[offset + 2] = clampByte(color[2] * dim + 255 * whiteMix);
+        data[offset + 3] = Math.floor((28 + Math.random() * 165) * intensity * VHS_GLITCH_STATIC_ALPHA);
+      }
+    }
+
+    this.context.putImageData(imageData, 0, 0);
+  }
+
+  private drawScanlineNoise(level: number, intensity: number): void {
+    const { width, height } = this.canvas;
+    const lineCount = Math.ceil(8 + level * 2.6);
+    for (let index = 0; index < lineCount; index += 1) {
+      const y = Math.floor(Math.random() * height);
+      const alpha = (0.04 + Math.random() * 0.18) * intensity;
+      const color = randomVhsChromaColor();
+      this.context.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`;
+      this.context.fillRect(Math.random() * -width * 0.08, y, width * (1.04 + Math.random() * 0.18), 1);
+    }
+  }
+
+  private drawTearBands(level: number, intensity: number): void {
+    const { width, height } = this.canvas;
+    const bandCount = Math.max(1, Math.ceil((1 + level * 1.45) * VHS_GLITCH_BAND_COUNT_SCALE));
+
+    for (let index = 0; index < bandCount; index += 1) {
+      const bandHeight = Math.max(2, Math.floor((2 + Math.random() * 9) * (0.7 + intensity)));
+      const y = Math.floor(Math.random() * (height - bandHeight));
+      const xOffset = (Math.random() - 0.5) * width * intensity * 0.3;
+      const alpha = (0.08 + Math.random() * VHS_GLITCH_BAND_ALPHA) * intensity;
+      const color = randomVhsChromaColor();
+
+      this.context.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`;
+      this.context.fillRect(xOffset, y, width + Math.abs(xOffset) + 12, bandHeight);
+
+      const fringeAlpha = alpha * 0.62;
+      const leadingFringe = VHS_GLITCH_CHROMA_COLORS[(index + level) % VHS_GLITCH_CHROMA_COLORS.length];
+      const trailingFringe = VHS_GLITCH_CHROMA_COLORS[(index + level + 2) % VHS_GLITCH_CHROMA_COLORS.length];
+      this.context.fillStyle = `rgba(${leadingFringe[0]}, ${leadingFringe[1]}, ${leadingFringe[2]}, ${fringeAlpha})`;
+      this.context.fillRect(xOffset - 4 - intensity * 12, y, width * 0.92, 1);
+      this.context.fillStyle = `rgba(${trailingFringe[0]}, ${trailingFringe[1]}, ${trailingFringe[2]}, ${fringeAlpha})`;
+      this.context.fillRect(xOffset + 4 + intensity * 10, y + bandHeight - 1, width * 0.94, 1);
+    }
+  }
+
+  private drawTrackingBar(time: number, level: number, intensity: number): void {
+    const { width, height } = this.canvas;
+    const trackingHeight = Math.max(10, height * (0.045 + intensity * 0.075));
+    const trackingY = positiveModulo(
+      time * (42 + level * 6) + level * 37,
+      height + trackingHeight * 2
+    ) - trackingHeight;
+    const trackingColor = randomVhsChromaColor();
+    const shadowColor = randomVhsChromaColor();
+    const gradient = this.context.createLinearGradient(0, trackingY, 0, trackingY + trackingHeight);
+    gradient.addColorStop(0, `rgba(${trackingColor[0]}, ${trackingColor[1]}, ${trackingColor[2]}, 0)`);
+    gradient.addColorStop(0.3, `rgba(${trackingColor[0]}, ${trackingColor[1]}, ${trackingColor[2]}, ${0.09 * intensity})`);
+    gradient.addColorStop(0.52, `rgba(${trackingColor[0]}, ${trackingColor[1]}, ${trackingColor[2]}, ${0.3 * intensity})`);
+    gradient.addColorStop(0.68, `rgba(${shadowColor[0]}, ${shadowColor[1]}, ${shadowColor[2]}, ${0.18 * intensity})`);
+    gradient.addColorStop(1, `rgba(${shadowColor[0]}, ${shadowColor[1]}, ${shadowColor[2]}, 0)`);
+
+    const xOffset = Math.sin(time * 17 + level * 2.7) * width * intensity * 0.08;
+    this.context.fillStyle = gradient;
+    this.context.fillRect(xOffset, trackingY, width + Math.abs(xOffset) + 18, trackingHeight);
+  }
+}
+
 class TrajectoryProjection {
   readonly mesh: THREE.InstancedMesh<THREE.CircleGeometry, THREE.MeshBasicMaterial>;
 
@@ -3870,8 +4123,14 @@ class TrajectoryProjection {
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   }
 
-  update(points: readonly TrajectoryPoint[], time: number, settings: ProjectorBeamSettings): void {
+  update(
+    points: readonly TrajectoryPoint[],
+    time: number,
+    settings: ProjectorBeamSettings,
+    glitchLevel = 0
+  ): void {
     this.applySettings(settings);
+    this.mesh.position.set(0, 0, 0);
     const segments = createTrajectorySegments(points, settings);
     const lastSegment = segments[segments.length - 1];
     const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
@@ -3889,10 +4148,15 @@ class TrajectoryProjection {
     let dotIndex = 0;
     const dotLimit = Math.min(Math.floor(settings.maxDots), TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT);
     let distance = positiveModulo(this.phaseDistance, settings.dotSpacing);
+    const glitchIntensity = vhsGlitchIntensityForLevel(glitchLevel);
 
     while (distance <= totalLength && dotIndex < dotLimit) {
       const point = sampleTrajectorySegments(segments, distance);
-      this.position.set(point.x, point.y, settings.z);
+      this.position.set(
+        point.x + vhsMeshTearOffset(point.y, time, glitchLevel, glitchIntensity),
+        point.y,
+        settings.z
+      );
       this.scale.setScalar(Math.max(0.001, settings.dotRadius));
       this.matrix.compose(this.position, this.rotation, this.scale);
       this.mesh.setMatrixAt(dotIndex, this.matrix);
@@ -6246,6 +6510,52 @@ function formatControlValue(value: number, decimals: number): string {
   }
 
   return value.toFixed(decimals);
+}
+
+function vhsGlitchIntensityForLevel(level: number): number {
+  if (level <= 0) {
+    return 0;
+  }
+
+  return clamp(VHS_GLITCH_BASE_INTENSITY + level * VHS_GLITCH_LEVEL_STEP, 0, VHS_GLITCH_MAX_INTENSITY);
+}
+
+function vhsMeshTearOffset(y: number, time: number, level: number, intensity: number): number {
+  const slice = Math.floor((y + HALF_HEIGHT) * VHS_GLITCH_TRACKING_WIDTH + time * (6.8 + level * 0.48));
+  const hash = Math.sin(slice * 12.9898 + level * 78.233) * 43758.5453;
+  const noise = hash - Math.floor(hash);
+  const tearThreshold = 0.88 - intensity * 0.32;
+  const tearGate = noise > tearThreshold
+    ? ((noise - tearThreshold) / Math.max(1 - tearThreshold, 0.001)) ** 2
+    : 0;
+  const tearSign = Math.sin(slice * 3.917 + level * 0.67) >= 0 ? 1 : -1;
+  const wobble = Math.sin(time * (12.5 + level * 1.4) + y * 2.65 + level) * VHS_GLITCH_MESH_WOBBLE_X;
+  const tracking = Math.sin(time * (3.1 + level * 0.3) + level * 1.9) * VHS_GLITCH_MESH_WOBBLE_X * 0.42;
+
+  return (wobble + tracking) * intensity + tearSign * tearGate * VHS_GLITCH_MESH_TEAR_X * intensity;
+}
+
+function randomVhsChromaColor(): readonly [number, number, number] {
+  return VHS_GLITCH_CHROMA_COLORS[Math.floor(Math.random() * VHS_GLITCH_CHROMA_COLORS.length)];
+}
+
+function clampByte(value: number): number {
+  return Math.round(clamp(value, 0, 255));
+}
+
+function setVhsBasePosition(mesh: THREE.Mesh): void {
+  mesh.userData.vhsBasePosition = mesh.position.clone();
+}
+
+function vhsBasePosition(mesh: THREE.Mesh): THREE.Vector3 {
+  const stored = mesh.userData.vhsBasePosition;
+  if (stored instanceof THREE.Vector3) {
+    return stored;
+  }
+
+  const position = mesh.position.clone();
+  mesh.userData.vhsBasePosition = position;
+  return position;
 }
 
 function setMaterialOpacity(material: THREE.Material | THREE.Material[], opacity: number): void {
