@@ -597,6 +597,7 @@ export class BreakoutGame {
   private splitSequenceActive = false;
   private fatalMissInstance: BreakoutoutoutInstance | null = null;
   private totalGameOver = false;
+  private totalGameCleared = false;
   private gameStarted = false;
   private paused = false;
   private hoveredMenuAction: MainMenuAction | null = null;
@@ -1254,7 +1255,7 @@ export class BreakoutGame {
 
     if (event.code === 'KeyR') {
       event.preventDefault();
-      if (this.totalGameOver) {
+      if (this.isGameFinished()) {
         this.restartGame();
       } else {
         this.restartSelected();
@@ -1291,7 +1292,7 @@ export class BreakoutGame {
       return;
     }
 
-    if (this.totalGameOver) {
+    if (this.isGameFinished()) {
       if (this.isRestartButtonHit(event.clientX, event.clientY)) {
         event.preventDefault();
       }
@@ -1326,7 +1327,7 @@ export class BreakoutGame {
       return;
     }
 
-    if (this.totalGameOver) {
+    if (this.isGameFinished()) {
       this.updateRestartButtonCursor(event.clientX, event.clientY);
       return;
     }
@@ -1368,7 +1369,7 @@ export class BreakoutGame {
       return;
     }
 
-    if (this.totalGameOver) {
+    if (this.isGameFinished()) {
       if (this.isRestartButtonHit(event.clientX, event.clientY)) {
         event.preventDefault();
         this.restartGame();
@@ -1468,7 +1469,7 @@ export class BreakoutGame {
   }
 
   private updateTouchPaddle(clientX: number, clientY: number): void {
-    if (!this.gameStarted || this.autopilot || this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.autopilot || this.isGameFinished() || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -1534,7 +1535,7 @@ export class BreakoutGame {
   }
 
   private handleTouchGestureEnd(): void {
-    if (!this.gameStarted || this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.isGameFinished() || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -1644,7 +1645,7 @@ export class BreakoutGame {
             continue;
           }
 
-          const allowPaddleInput = this.gameStarted && !this.totalGameOver && !fatalSequenceInstance;
+          const allowPaddleInput = this.gameStarted && !this.isGameFinished() && !fatalSequenceInstance;
           const input = allowPaddleInput && !this.autopilot && index === this.selectedIndex && instance.isActive()
             ? this.currentInput
             : IDLE_INPUT;
@@ -1753,7 +1754,7 @@ export class BreakoutGame {
   }
 
   private launchOrAdvanceSelected(): void {
-    if (!this.gameStarted || this.splitSequenceActive || this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.splitSequenceActive || this.isGameFinished() || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -1766,7 +1767,7 @@ export class BreakoutGame {
   }
 
   private restartSelected(): void {
-    if (!this.gameStarted || this.totalGameOver || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.isGameFinished() || this.isFatalMissSequenceActive()) {
       return;
     }
 
@@ -1795,7 +1796,7 @@ export class BreakoutGame {
       return false;
     }
 
-    if (this.instances.length === 0 || this.totalGameOver) {
+    if (this.instances.length === 0 || this.isGameFinished()) {
       return true;
     }
 
@@ -1835,6 +1836,7 @@ export class BreakoutGame {
     this.splitSequenceActive = false;
     this.fatalMissInstance = null;
     this.totalGameOver = false;
+    this.totalGameCleared = false;
     this.splitTutorialActive = false;
     this.splitTutorialElapsed = 0;
     this.splitTutorial.setVisible(false);
@@ -2076,13 +2078,18 @@ export class BreakoutGame {
       return;
     }
 
+    if (this.areAllGamesCleared()) {
+      this.triggerAllGamesCleared(instance);
+      return;
+    }
+
     if (shouldSyncBallSpeed) {
       this.syncBallSpeedForAll();
     }
   }
 
   private startFatalMissSequence(instance: BreakoutoutoutInstance): void {
-    if (this.totalGameOver || this.fatalMissInstance === instance) {
+    if (this.isGameFinished() || this.fatalMissInstance === instance) {
       return;
     }
 
@@ -2093,7 +2100,7 @@ export class BreakoutGame {
   }
 
   private triggerTotalGameOver(source: BreakoutoutoutInstance): void {
-    if (this.totalGameOver) {
+    if (this.isGameFinished()) {
       return;
     }
 
@@ -2107,7 +2114,26 @@ export class BreakoutGame {
     }
 
     this.syncBallSpeedForAll();
-    this.prepareLeaderboardAfterGameOver(this.globalScore);
+  }
+
+  private triggerAllGamesCleared(source: BreakoutoutoutInstance): void {
+    if (this.isGameFinished()) {
+      return;
+    }
+
+    this.totalGameCleared = true;
+    this.fatalMissInstance = null;
+    this.clearTouchInput();
+    this.focusInstance(source);
+    this.syncBallSpeedForAll();
+    this.prepareLeaderboardAfterAllGamesCleared(this.globalScore);
+  }
+
+  private areAllGamesCleared(): boolean {
+    return this.instances.length > 0
+      && !this.splitSequenceActive
+      && this.pendingSplits.length === 0
+      && this.instances.every((instance) => instance.isCleared());
   }
 
   private async refreshLeaderboard(): Promise<void> {
@@ -2134,8 +2160,8 @@ export class BreakoutGame {
     }
   }
 
-  private prepareLeaderboardAfterGameOver(score: number): void {
-    if (!this.isLeaderboardEligibleMode() || score <= 0) {
+  private prepareLeaderboardAfterAllGamesCleared(score: number): void {
+    if (!this.gameStarted || !this.isLeaderboardEligibleMode() || score <= 0) {
       return;
     }
 
@@ -2157,7 +2183,7 @@ export class BreakoutGame {
       await this.refreshLeaderboard();
     }
 
-    if (!this.totalGameOver || this.globalScore !== score || this.leaderboardLoadState !== 'ready') {
+    if (!this.totalGameCleared || this.globalScore !== score || this.leaderboardLoadState !== 'ready') {
       return;
     }
 
@@ -2559,7 +2585,7 @@ export class BreakoutGame {
   }
 
   private syncBallSpeedForAll(): void {
-    if (this.totalGameOver) {
+    if (this.isGameFinished()) {
       for (const instance of this.instances) {
         this.setBallSpeedMultiplierTarget(instance, 0, false);
       }
@@ -2816,7 +2842,7 @@ export class BreakoutGame {
 
   private trajectoryProjectionInputForView(view: InstanceView): BreakoutInput {
     const fatalSequenceInstance = this.isFatalMissSequenceActive() ? this.fatalMissInstance : null;
-    const allowPaddleInput = this.gameStarted && !this.totalGameOver && !fatalSequenceInstance;
+    const allowPaddleInput = this.gameStarted && !this.isGameFinished() && !fatalSequenceInstance;
     return allowPaddleInput
       && !this.autopilot
       && this.isSelectedView(view)
@@ -2875,8 +2901,9 @@ export class BreakoutGame {
     const statusLabel = selected ? this.planeStatusLabel(state) : '';
     view.statusText.setText(statusLabel, 360);
     view.statusText.mesh.position.set(0, PLANE_STATUS_Y, PLANE_STATUS_Z);
-    this.updatePlaneRestartButtonHud(view, selected && this.totalGameOver && state.phase === 'game-over');
-    this.updateLeaderboardPanelHud(view, selected && this.totalGameOver && state.phase === 'game-over');
+    const showEndGameHud = selected && this.isEndGameHudVisible(state);
+    this.updatePlaneRestartButtonHud(view, showEndGameHud);
+    this.updateLeaderboardPanelHud(view, showEndGameHud);
 
     if (statusLabel.length === 0) {
       return;
@@ -2906,6 +2933,10 @@ export class BreakoutGame {
     }
 
     this.scalePlaneHudPlane(view.leaderboardPanel, LEADERBOARD_PANEL_WORLD_HEIGHT, LEADERBOARD_PANEL_MAX_WIDTH);
+  }
+
+  private isEndGameHudVisible(state: BreakoutoutoutRenderState): boolean {
+    return this.isGameFinished() && isTerminalPhase(state.phase);
   }
 
   private planeStatusLabel(state: BreakoutoutoutRenderState): string {
@@ -3183,7 +3214,7 @@ export class BreakoutGame {
       !this.autopilot
       || this.instances.length <= 1
       || this.splitSequenceActive
-      || this.totalGameOver
+      || this.isGameFinished()
       || this.isFatalMissSequenceActive()
       || time - this.lastAutopilotSelectionChangeTime < AUTOPILOT_SELECTION_COOLDOWN
     ) {
@@ -3229,7 +3260,7 @@ export class BreakoutGame {
       || this.instances.length <= 1
       || direction === 0
       || this.splitSequenceActive
-      || this.totalGameOver
+      || this.isGameFinished()
       || this.isFatalMissSequenceActive()
     ) {
       return;
@@ -3669,8 +3700,12 @@ export class BreakoutGame {
   }
 
   private isFatalMissSequenceActive(): boolean {
-    return !this.totalGameOver
+    return !this.isGameFinished()
       && this.fatalMissInstance?.getRenderState().fatalMissPending === true;
+  }
+
+  private isGameFinished(): boolean {
+    return this.totalGameOver || this.totalGameCleared;
   }
 
   private isGameOverCameraSequenceActive(): boolean {
