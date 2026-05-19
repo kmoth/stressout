@@ -401,6 +401,7 @@ type InstanceOpacityTween = {
 type PendingSplit = {
   source: BreakoutoutoutInstance;
   snapshot: BreakoutoutoutSnapshot;
+  selectCloneOnComplete: boolean;
 };
 
 type SplitBloomPulse = {
@@ -2286,7 +2287,11 @@ export class BreakoutGame {
   }
 
   private queueSplitReality(source: BreakoutoutoutInstance, snapshot: BreakoutoutoutSnapshot): void {
-    this.pendingSplits.push({ source, snapshot });
+    this.pendingSplits.push({
+      source,
+      snapshot,
+      selectCloneOnComplete: source === this.selectedInstance
+    });
 
     if (!this.splitSequenceActive) {
       this.startNextSplitSequence();
@@ -2332,7 +2337,7 @@ export class BreakoutGame {
       to: targetZ,
       elapsed: 0,
       duration: SPLIT_PLANE_TRAVEL_DURATION,
-      selectOnComplete: true,
+      selectOnComplete: pending.selectCloneOnComplete,
       resumeSplitOnComplete: true
     };
   }
