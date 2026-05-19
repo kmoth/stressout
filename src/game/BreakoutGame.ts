@@ -4,24 +4,6 @@ import { barrelUV, colorBleeding, scanlines, vignette } from 'three/examples/jsm
 import { retroPass } from 'three/examples/jsm/tsl/display/RetroPassNode.js';
 import { circle } from 'three/examples/jsm/tsl/display/Shape.js';
 import { bayerDither } from 'three/examples/jsm/tsl/math/Bayer.js';
-import Stats from 'three/examples/jsm/libs/stats.module.js';
-import System, {
-  Alpha,
-  Body,
-  Color,
-  Emitter,
-  Life,
-  Mass,
-  PointZone,
-  Position,
-  RadialVelocity,
-  Radius,
-  Rate,
-  Scale,
-  Span,
-  SpriteRenderer,
-  Vector3D
-} from 'three-nebula';
 import {
   BALL_RADIUS,
   BALL_SPEED,
@@ -34,7 +16,6 @@ import {
   BreakoutoutoutOptions,
   BreakoutoutoutRenderState,
   BreakoutoutoutSnapshot,
-  // BrickKind,
   BrickSnapshot,
   createSplitRealitySnapshot,
   FIXED_STEP,
@@ -364,26 +345,6 @@ type PostProcessingUniforms = {
   affineDistortion: THREE.UniformNode<'float', number>;
 };
 
-type NebulaRuntime = {
-  system: any;
-  api: {
-    Alpha: any;
-    Body: any;
-    Color: any;
-    Emitter: any;
-    Life: any;
-    Mass: any;
-    PointZone: any;
-    Position: any;
-    RadialVelocity: any;
-    Radius: any;
-    Rate: any;
-    Scale: any;
-    Span: any;
-    Vector3D: any;
-  };
-};
-
 type PlaneZTransition = {
   from: number;
   to: number;
@@ -571,7 +532,6 @@ export class BreakoutGame {
   private readonly pauseMenu: PauseMenuView;
   private readonly splitTutorial = new SplitTutorialView(MAIN_MENU_RENDER_ORDER + 6);
   private readonly scoreboard: ScoreboardAdapter = createScoreboardAdapter();
-  private readonly stats = new Stats();
   private readonly sound = new SoundBank();
   private readonly keys = new Set<string>();
   private readonly pointerRaycaster = new THREE.Raycaster();
@@ -584,7 +544,6 @@ export class BreakoutGame {
   private readonly pointerBoardQuaternion = new THREE.Quaternion();
   private readonly planeHudParentQuaternion = new THREE.Quaternion();
   private readonly planeHudCameraQuaternion = new THREE.Quaternion();
-  // private readonly particleTexture: THREE.CanvasTexture;
   private readonly initialInstanceCount: number;
   private readonly autopilot: boolean;
   private readonly projectorDebug: boolean;
@@ -607,7 +566,6 @@ export class BreakoutGame {
   private projectorDebugTestBall: ProjectorDebugBall | null = null;
   private nextGlitchLevel = 1;
 
-  private nebula: NebulaRuntime | null = null;
   private accumulator = 0;
   private lastTime = performance.now();
   private nextInstanceId = 1;
@@ -683,8 +641,6 @@ export class BreakoutGame {
     this.shell.appendChild(this.renderer.domElement);
     this.pauseButton = this.createPauseButton();
     this.shell.appendChild(this.pauseButton);
-    // this.stats.showPanel(0);
-    // this.shell.appendChild(this.stats.dom);
     this.scene.add(this.camera);
 
     this.postProcessingUniforms = createPostProcessingUniforms(this.postProcessingSettings);
@@ -710,7 +666,6 @@ export class BreakoutGame {
       });
     }
 
-    // this.particleTexture = createParticleTexture();
     this.createLighting();
     this.mainMenu = new MainMenuView();
     this.mainMenu.setVisible(!this.gameStarted);
@@ -851,7 +806,6 @@ export class BreakoutGame {
   static async create(root: HTMLElement, options: BreakoutGameOptions = {}): Promise<BreakoutGame> {
     const game = new BreakoutGame(root, options);
     await game.renderer.init();
-    game.createNebulaSystem();
     game.populateInitialInstances();
     requestAnimationFrame(game.tick);
     return game;
@@ -887,32 +841,6 @@ export class BreakoutGame {
     return {
       ...this.instanceOptions,
       autopilot: true
-    };
-  }
-
-  private createNebulaSystem(): void {
-    const particleSystem = new System();
-    const spriteRenderer = new SpriteRenderer(this.scene, THREE);
-    spriteRenderer.logRendererType = () => undefined;
-    particleSystem.addRenderer(spriteRenderer);
-    this.nebula = {
-      system: particleSystem,
-      api: {
-        Alpha,
-        Body,
-        Color,
-        Emitter,
-        Life,
-        Mass,
-        PointZone,
-        Position,
-        RadialVelocity,
-        Radius,
-        Rate,
-        Scale,
-        Span,
-        Vector3D
-      }
     };
   }
 
@@ -1650,13 +1578,11 @@ export class BreakoutGame {
     const frameTime = Math.max(0, (time - this.lastTime) / 1000);
     const delta = Math.min(frameTime, MAX_DT);
     this.lastTime = time;
-    this.stats.begin();
 
     if (this.paused) {
       this.accumulator = 0;
       this.pauseMenu.update(time / 1000, this.camera, PAUSE_MENU_CAMERA_DISTANCE);
       this.renderPipeline.render();
-      this.stats.end();
       requestAnimationFrame(this.tick);
       return;
     }
@@ -1703,9 +1629,7 @@ export class BreakoutGame {
     this.mainMenu.update(time / 1000, this.camera, MAIN_MENU_CAMERA_DISTANCE);
     this.updatePlaneHudBillboards();
     this.updateSplitTutorialBillboard();
-    this.nebula?.system.update(delta);
     this.renderPipeline.render();
-    this.stats.end();
     requestAnimationFrame(this.tick);
   };
 
@@ -3701,64 +3625,6 @@ export class BreakoutGame {
     this.splitTutorial.mesh.quaternion.copy(this.camera.quaternion);
   }
 
-  // private burst(instance: BreakoutoutoutInstance, x: number, y: number, color: number, kind: BrickKind): void {
-  //   if (!this.nebula) {
-  //     return;
-  //   }
-
-  //   const view = this.views.get(instance);
-  //   if (!view) {
-  //     return;
-  //   }
-
-  //   const worldPosition = view.group.localToWorld(new THREE.Vector3(x, y, 0.42));
-  //   const { api, system } = this.nebula;
-  //   const sprite = new THREE.Sprite(
-  //     new THREE.SpriteMaterial({
-  //       map: this.particleTexture,
-  //       color,
-  //       blending: THREE.AdditiveBlending,
-  //       transparent: true,
-  //       depthWrite: false
-  //     })
-  //   );
-
-  //   const emitter = new api.Emitter();
-  //   const isSplitter = kind === 'splitter';
-  //   const isAutopilot = kind === 'autopilot';
-  //   const isLife = kind === 'life';
-  //   const particleMin = isSplitter ? 46 : isAutopilot ? 36 : isLife ? 40 : 26;
-  //   const particleMax = isSplitter ? 64 : isAutopilot ? 52 : isLife ? 56 : 36;
-  //   const radiusMax = isSplitter ? 0.28 : isAutopilot ? 0.24 : isLife ? 0.25 : 0.18;
-  //   const lifeMax = isSplitter ? 1.0 : isAutopilot ? 0.86 : isLife ? 0.92 : 0.7;
-  //   const velocityMin = isSplitter ? 3.8 : isAutopilot ? 3.2 : isLife ? 3.4 : 2.8;
-  //   const velocityMax = isSplitter ? 7.2 : isAutopilot ? 6.4 : isLife ? 6.8 : 5.2;
-  //   const startScale = isSplitter ? 1.4 : isAutopilot ? 1.22 : isLife ? 1.3 : 1.05;
-
-  //   emitter
-  //     .setRate(new api.Rate(new api.Span(particleMin, particleMax), new api.Span(0.015, 0.028)))
-  //     .setInitializers([
-  //       new api.Body(sprite),
-  //       new api.Position(new api.PointZone(worldPosition.x, worldPosition.y, worldPosition.z)),
-  //       new api.Mass(1),
-  //       new api.Radius(0.08, radiusMax),
-  //       new api.Life(0.34, lifeMax),
-  //       new api.RadialVelocity(new api.Span(velocityMin, velocityMax), new api.Vector3D(0, 1, 0), 180)
-  //     ])
-  //     .setBehaviours([
-  //       new api.Alpha(0.95, 0),
-  //       new api.Scale(startScale, 0.22),
-  //       new api.Color(new THREE.Color(color), new THREE.Color(0xffffff))
-  //     ]);
-
-  //   system.addEmitter(emitter);
-  //   emitter.emit(0.08);
-  //   window.setTimeout(() => {
-  //     emitter.stopEmit();
-  //     system.removeEmitter(emitter);
-  //   }, 1_100);
-  // }
-
   private get currentInput(): BreakoutInput {
     const input: BreakoutInput = {
       left: this.keys.has('ArrowLeft'),
@@ -3863,27 +3729,6 @@ export class BreakoutGame {
     return views;
   }
 }
-
-// function createParticleTexture(): THREE.CanvasTexture {
-//   const canvas = document.createElement('canvas');
-//   canvas.width = 64;
-//   canvas.height = 64;
-//   const context = canvas.getContext('2d');
-//   if (!context) {
-//     throw new Error('Unable to create particle texture.');
-//   }
-
-//   const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 31);
-//   gradient.addColorStop(0, 'rgba(255,255,255,1)');
-//   gradient.addColorStop(0.36, 'rgba(255,255,255,0.72)');
-//   gradient.addColorStop(1, 'rgba(255,255,255,0)');
-//   context.fillStyle = gradient;
-//   context.fillRect(0, 0, canvas.width, canvas.height);
-
-//   const texture = new THREE.CanvasTexture(canvas);
-//   texture.needsUpdate = true;
-//   return texture;
-// }
 
 function createProjectorDebugBricks(): BrickSnapshot[] {
   const bricks: BrickSnapshot[] = [];
