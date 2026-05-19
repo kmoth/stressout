@@ -524,6 +524,7 @@ export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot' | 'san
   initialInstanceCount?: number;
   ballSpeedMultiplierActiveGameCap?: number;
   projectorDebug?: boolean;
+  pathProjectionDebug?: boolean;
 };
 
 export class BreakoutGame {
@@ -558,6 +559,7 @@ export class BreakoutGame {
   private readonly initialInstanceCount: number;
   private readonly autopilot: boolean;
   private readonly projectorDebug: boolean;
+  private readonly pathProjectionDebug: boolean;
   private readonly ballSpeedMultiplierActiveGameCap: number;
   private readonly instanceOptions: BreakoutoutoutOptions;
   private readonly instanceSoundPosition = new THREE.Vector3();
@@ -621,6 +623,7 @@ export class BreakoutGame {
 
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
     this.projectorDebug = options.projectorDebug ?? false;
+    this.pathProjectionDebug = options.pathProjectionDebug ?? false;
     this.initialInstanceCount = this.projectorDebug
       ? 1
       : normalizeInitialInstanceCount(options.initialInstanceCount);
@@ -2121,6 +2124,7 @@ export class BreakoutGame {
   private isLeaderboardEligibleMode(): boolean {
     return !this.autopilot
       && !this.projectorDebug
+      && !this.pathProjectionDebug
       && this.instanceOptions.sandbox !== true
       && this.instanceOptions.specialBrickKinds === undefined
       && this.initialInstanceCount === DEFAULT_INITIAL_INSTANCE_COUNT
@@ -2629,13 +2633,26 @@ export class BreakoutGame {
     for (const view of this.views) {
       const state = this.projectorDebug
         ? this.createProjectorDebugRenderState(view.instance)
-        : {
-            ...view.instance.getRenderState(),
-            score: this.globalScore
-          };
+        : this.renderStateForInstance(view.instance);
       view.renderState = state;
       this.syncInstanceView(view, state, time);
     }
+  }
+
+  private renderStateForInstance(instance: BreakoutoutoutInstance): BreakoutoutoutRenderState {
+    const state: BreakoutoutoutRenderState = {
+      ...instance.getRenderState(),
+      score: this.globalScore
+    };
+
+    if (!this.pathProjectionDebug || state.phase !== 'playing') {
+      return state;
+    }
+
+    return {
+      ...state,
+      pathProjectionActive: true
+    };
   }
 
   private syncInstanceView(view: InstanceView, state: BreakoutoutoutRenderState, time: number): void {
@@ -2751,7 +2768,11 @@ export class BreakoutGame {
 
   private trajectoryProjectionCacheKey(state: BreakoutoutoutRenderState): string {
     return [
-      this.projectorDebug ? `debug:${this.projectorDebugAngle.toFixed(5)}` : 'game',
+      this.projectorDebug
+        ? `debug:${this.projectorDebugAngle.toFixed(5)}`
+        : this.pathProjectionDebug
+          ? 'path-debug'
+          : 'game',
       trajectoryProjectionPathSettingsSignature(this.projectorBeamSettings),
       trajectoryProjectionBrickSignature(state.bricks)
     ].join('|');
@@ -2841,7 +2862,9 @@ export class BreakoutGame {
     }
 
     if (state.pathProjectionActive) {
-      return `PATH ${Math.ceil(state.pathProjectionRemaining)}s`;
+      return state.pathProjectionRemaining > 0
+        ? `PATH ${Math.ceil(state.pathProjectionRemaining)}s`
+        : 'PATH';
     }
 
     if (state.autoPilotActive) {

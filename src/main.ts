@@ -39,6 +39,11 @@ const ballSpeedMultiplierActiveGameCap = parseIntegerParam(searchParams, BALL_SP
 const projectorDebug = parseBooleanParam(searchParams, 'projectorDebug')
   || parseBooleanParam(searchParams, 'projectorDebugMode')
   || parseBooleanParam(searchParams, 'debugProjector');
+const pathProjectionDebug = parseBooleanParam(searchParams, 'pathProjectionDebug')
+  || parseBooleanParam(searchParams, 'debugPathProjection')
+  || parseBooleanParam(searchParams, 'debugBallPath')
+  || parseBooleanParam(searchParams, 'ballPathDebug')
+  || parseBooleanParam(searchParams, 'debugPath');
 
 BreakoutGame.create(root, {
   autopilot,
@@ -46,7 +51,8 @@ BreakoutGame.create(root, {
   specialBrickKinds,
   initialInstanceCount,
   ballSpeedMultiplierActiveGameCap,
-  projectorDebug
+  projectorDebug,
+  pathProjectionDebug
 }).catch((error: unknown) => {
   console.error(error);
   root.innerHTML = `
