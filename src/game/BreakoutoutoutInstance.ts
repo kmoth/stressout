@@ -106,6 +106,19 @@ export type BreakoutoutoutRenderState = BreakoutoutoutSnapshot & {
   id: number;
 };
 
+export type BallPathProjectionPoint = {
+  x: number;
+  y: number;
+};
+
+export type BallPathProjectionOptions = {
+  input?: BreakoutInput;
+  maxBounces?: number;
+  maxDistance?: number;
+  maxSeconds?: number;
+  sampleSpacing?: number;
+};
+
 type BallSnapshot = BreakoutoutoutSnapshot['ball'];
 
 type SplitRealitySnapshotOptions = {
@@ -130,6 +143,13 @@ export type BreakoutoutoutEvent =
 type Brick = BrickSnapshot & {
   body?: RigidBody;
   collider?: Collider;
+};
+
+type ProjectionCollisions = {
+  bricksToRemove: Set<Brick>;
+  touchedFloor: boolean;
+  touchedPaddle: boolean;
+  touchedWall: boolean;
 };
 
 export function createSplitRealitySnapshot(
@@ -434,10 +454,30 @@ export class BreakoutoutoutInstance {
     }
   }
 
+  projectBallPath(options: BallPathProjectionOptions = {}): BallPathProjectionPoint[] {
+    if (this.phase !== 'playing' || this.currentBallSpeed <= MIN_MOVING_BALL_SPEED) {
+      return [];
+    }
+
+    const projection = new BreakoutoutoutInstance(this.id, this.snapshot(), {
+      autopilot: this.persistentAutopilot,
+      sandbox: true,
+      specialBrickKinds: [...this.specialBrickKinds]
+    });
+    projection.gameSpeed = this.gameSpeed;
+
+    try {
+      return projection.simulateProjectedBallPath(options);
+    } finally {
+      projection.dispose();
+    }
+  }
+
   dispose(): void {
     this.clearRemainingBricks();
     this.world.removeRigidBody(this.ballBody);
     this.world.removeRigidBody(this.paddleBody);
+    this.world.free();
   }
 
   private createRigidBodies(snapshot?: BreakoutoutoutSnapshot): void {
@@ -655,6 +695,100 @@ export class BreakoutoutoutInstance {
     }
 
     return events;
+  }
+
+  private simulateProjectedBallPath(options: BallPathProjectionOptions): BallPathProjectionPoint[] {
+    const maxSeconds = Math.max(options.maxSeconds ?? 8, FIXED_STEP);
+    const maxSteps = Math.max(1, Math.ceil(maxSeconds / FIXED_STEP));
+    const maxDistance = Math.max(options.maxDistance ?? Number.POSITIVE_INFINITY, 0);
+    const maxBounces = Math.max(1, Math.floor(options.maxBounces ?? Number.POSITIVE_INFINITY));
+    const sampleSpacing = Math.max(options.sampleSpacing ?? BALL_RADIUS, MIN_MOVING_BALL_SPEED);
+    const input = options.input ?? { left: false, right: false };
+    const start = this.ballBody.translation();
+    const points: BallPathProjectionPoint[] = [{ x: start.x, y: start.y }];
+    let lastSampleX = start.x;
+    let lastSampleY = start.y;
+    let traveled = 0;
+    let bounces = 0;
+
+    for (let step = 0; step < maxSteps && traveled < maxDistance && bounces < maxBounces; step += 1) {
+      if (this.phase !== 'playing') {
+        break;
+      }
+
+      const previous = this.ballBody.translation();
+      this.updatePaddle(FIXED_STEP, input);
+      this.world.timestep = FIXED_STEP;
+      this.world.step(this.eventQueue);
+
+      const collisions = this.collectProjectionCollisions();
+      const current = this.ballBody.translation();
+      const stepDistance = Math.hypot(current.x - previous.x, current.y - previous.y);
+      traveled += stepDistance;
+
+      const shouldStop = collisions.touchedFloor || collisions.touchedPaddle || traveled >= maxDistance;
+      const sampleDistance = Math.hypot(current.x - lastSampleX, current.y - lastSampleY);
+      if (sampleDistance >= sampleSpacing || shouldStop) {
+        points.push({ x: current.x, y: current.y });
+        lastSampleX = current.x;
+        lastSampleY = current.y;
+      }
+
+      if (shouldStop) {
+        break;
+      }
+
+      if (collisions.touchedWall || collisions.bricksToRemove.size > 0) {
+        bounces += Math.max(1, collisions.bricksToRemove.size);
+      }
+
+      for (const brick of collisions.bricksToRemove) {
+        this.removeBrick(brick);
+      }
+
+      if (this.phase === 'playing') {
+        this.keepBallPlanar();
+      }
+    }
+
+    return points.length > 1 ? points : [];
+  }
+
+  private collectProjectionCollisions(): ProjectionCollisions {
+    const collisions: ProjectionCollisions = {
+      bricksToRemove: new Set<Brick>(),
+      touchedFloor: false,
+      touchedPaddle: false,
+      touchedWall: false
+    };
+
+    this.eventQueue.drainCollisionEvents((handleA: number, handleB: number, started: boolean) => {
+      if (!started) {
+        return;
+      }
+
+      const hasBall = handleA === this.ballCollider.handle || handleB === this.ballCollider.handle;
+      if (!hasBall) {
+        return;
+      }
+
+      const otherHandle = handleA === this.ballCollider.handle ? handleB : handleA;
+      const brick = this.brickByCollider.get(otherHandle);
+      if (brick && !brick.hit) {
+        collisions.bricksToRemove.add(brick);
+        return;
+      }
+
+      if (otherHandle === this.floorCollider.handle) {
+        collisions.touchedFloor = true;
+      } else if (otherHandle === this.paddleCollider.handle) {
+        collisions.touchedPaddle = true;
+      } else {
+        collisions.touchedWall = true;
+      }
+    });
+
+    return collisions;
   }
 
   private applyPaddleBounce(): void {

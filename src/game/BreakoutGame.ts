@@ -26,6 +26,7 @@ import System, {
 import {
   BALL_RADIUS,
   BALL_SPEED,
+  BallPathProjectionOptions,
   BOARD_HEIGHT,
   BOARD_WIDTH,
   BreakoutInput,
@@ -141,6 +142,8 @@ const TRAJECTORY_PROJECTION_WALL_GUARD = 0.045;
 const TRAJECTORY_PROJECTION_CORNER_TOLERANCE = 0.018;
 const TRAJECTORY_PROJECTION_SURFACE_CLEARANCE = 0.008;
 const TRAJECTORY_PROJECTION_CACHE_MAX_BALL_DRIFT = BALL_RADIUS * 1.35;
+const TRAJECTORY_PROJECTION_SIMULATION_SECONDS = 8;
+const TRAJECTORY_PROJECTION_SIMULATION_SAMPLE_SPACING = 0.18;
 const PROJECTOR_DEBUG_BRICK_COUNT = 34;
 const PROJECTOR_DEBUG_BRICK_MIN_WIDTH = 0.56;
 const PROJECTOR_DEBUG_BRICK_MAX_WIDTH = 1.34;
@@ -2727,11 +2730,12 @@ export class BreakoutGame {
       return [];
     }
 
-    const key = this.trajectoryProjectionCacheKey(state);
+    const input = this.trajectoryProjectionInputForView(view);
+    const key = this.trajectoryProjectionCacheKey(state, input);
     if (view.trajectoryProjectionCache?.key !== key) {
       view.trajectoryProjectionCache = {
         key,
-        points: createTrajectoryProjectionPath(state, this.projectorBeamSettings),
+        points: this.createTrajectoryProjectionPathForView(view, state, input),
         visibleStartDistance: 0
       };
       view.trajectoryProjection.resetPhase();
@@ -2748,7 +2752,7 @@ export class BreakoutGame {
     if (visiblePath.driftSquared > TRAJECTORY_PROJECTION_CACHE_MAX_BALL_DRIFT ** 2) {
       view.trajectoryProjectionCache = {
         key,
-        points: createTrajectoryProjectionPath(state, this.projectorBeamSettings),
+        points: this.createTrajectoryProjectionPathForView(view, state, input),
         visibleStartDistance: 0
       };
       view.trajectoryProjection.resetPhase();
@@ -2766,7 +2770,40 @@ export class BreakoutGame {
     return visiblePath.points;
   }
 
-  private trajectoryProjectionCacheKey(state: BreakoutoutoutRenderState): string {
+  private createTrajectoryProjectionPathForView(
+    view: InstanceView,
+    state: BreakoutoutoutRenderState,
+    input: BreakoutInput
+  ): TrajectoryPoint[] {
+    if (this.projectorDebug) {
+      return createTrajectoryProjectionPath(state, this.projectorBeamSettings);
+    }
+
+    return view.instance.projectBallPath(this.trajectoryProjectionOptions(input));
+  }
+
+  private trajectoryProjectionOptions(input: BreakoutInput): BallPathProjectionOptions {
+    return {
+      input,
+      maxBounces: this.projectorBeamSettings.maxBounces,
+      maxDistance: this.projectorBeamSettings.maxDistance,
+      maxSeconds: TRAJECTORY_PROJECTION_SIMULATION_SECONDS,
+      sampleSpacing: TRAJECTORY_PROJECTION_SIMULATION_SAMPLE_SPACING
+    };
+  }
+
+  private trajectoryProjectionInputForView(view: InstanceView): BreakoutInput {
+    const fatalSequenceInstance = this.isFatalMissSequenceActive() ? this.fatalMissInstance : null;
+    const allowPaddleInput = this.gameStarted && !this.totalGameOver && !fatalSequenceInstance;
+    return allowPaddleInput
+      && !this.autopilot
+      && this.isSelectedView(view)
+      && view.instance.isActive()
+      ? this.currentInput
+      : IDLE_INPUT;
+  }
+
+  private trajectoryProjectionCacheKey(state: BreakoutoutoutRenderState, input: BreakoutInput): string {
     return [
       this.projectorDebug
         ? `debug:${this.projectorDebugAngle.toFixed(5)}`
@@ -2774,6 +2811,7 @@ export class BreakoutGame {
           ? 'path-debug'
           : 'game',
       trajectoryProjectionPathSettingsSignature(this.projectorBeamSettings),
+      trajectoryProjectionInputSignature(input),
       trajectoryProjectionBrickSignature(state.bricks)
     ].join('|');
   }
@@ -4257,6 +4295,14 @@ function trajectoryProjectionPathSettingsSignature(settings: ProjectorBeamSettin
     settings.cornerTolerance,
     settings.surfaceClearance
   ].map(formatTrajectorySignatureNumber).join(',');
+}
+
+function trajectoryProjectionInputSignature(input: BreakoutInput): string {
+  return [
+    Number(input.left),
+    Number(input.right),
+    typeof input.paddleX === 'number' ? formatTrajectorySignatureNumber(input.paddleX) : ''
+  ].join(':');
 }
 
 function trajectoryProjectionBrickSignature(bricks: readonly BrickSnapshot[]): string {
