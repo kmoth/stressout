@@ -116,8 +116,13 @@ const GAME_OVER_CAMERA_SHAKE_ROLL = 0.000;
 const AUTOPILOT_SELECTION_COOLDOWN = 1;
 const AUTOPILOT_SELECTION_PADDLE_APPROACH_DISTANCE = 2.25;
 const AUTOPILOT_SELECTION_MIN_APPROACH_SPEED = 0.05;
-const TOUCH_SWIPE_MIN_DISTANCE = 44;
-const TOUCH_SWIPE_AXIS_RATIO = 1.15;
+const TOUCH_GESTURE_LOCK_DISTANCE = 16;
+const TOUCH_PADDLE_AXIS_RATIO = 1.1;
+const TOUCH_SWIPE_AXIS_RATIO = 1.25;
+const TOUCH_SWIPE_FAST_DISTANCE = 36;
+const TOUCH_SWIPE_SLOW_DISTANCE = 72;
+const TOUCH_SWIPE_FAST_VELOCITY = 0.9;
+const TOUCH_SWIPE_SLOW_VELOCITY = 0.25;
 const SELECTED_OPACITY = 1;
 const SLOT_A_OPACITY = 0.08;
 const BACKGROUND_OPACITY = 0.15;
@@ -458,6 +463,8 @@ type PauseMenuAction = 'resume';
 
 type MenuButtonAction = MainMenuAction | PauseMenuAction;
 
+type TouchGestureIntent = 'pending' | 'paddle' | 'vertical-swipe';
+
 type SplitTutorialMode = 'keyboard' | 'touch';
 
 type LeaderboardLoadState = 'loading' | 'ready' | 'unavailable';
@@ -607,6 +614,9 @@ export class BreakoutGame {
   private touchStartY = 0;
   private touchLastX = 0;
   private touchLastY = 0;
+  private touchStartTime = 0;
+  private touchGestureIntent: TouchGestureIntent = 'pending';
+  private touchSwipeCommitted = false;
   private touchPaddleX: number | null = null;
   private postProcessingScreenScale = 1;
   private postProcessingColorBleedScale = 1;
@@ -1274,6 +1284,9 @@ export class BreakoutGame {
     this.touchStartY = event.clientY;
     this.touchLastX = event.clientX;
     this.touchLastY = event.clientY;
+    this.touchStartTime = event.timeStamp;
+    this.touchGestureIntent = 'pending';
+    this.touchSwipeCommitted = false;
     this.renderer.domElement.setPointerCapture(event.pointerId);
     this.updateTouchPaddle(event.clientX, event.clientY);
   };
@@ -1304,7 +1317,10 @@ export class BreakoutGame {
     event.preventDefault();
     this.touchLastX = event.clientX;
     this.touchLastY = event.clientY;
-    this.updateTouchPaddle(event.clientX, event.clientY);
+    this.updateTouchGesture(event.timeStamp);
+    if (this.touchGestureIntent !== 'vertical-swipe') {
+      this.updateTouchPaddle(event.clientX, event.clientY);
+    }
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
@@ -1349,9 +1365,12 @@ export class BreakoutGame {
     event.preventDefault();
     this.touchLastX = event.clientX;
     this.touchLastY = event.clientY;
-    this.updateTouchPaddle(event.clientX, event.clientY);
+    this.updateTouchGesture(event.timeStamp);
+    if (this.touchGestureIntent !== 'vertical-swipe') {
+      this.updateTouchPaddle(event.clientX, event.clientY);
+    }
     this.releaseTouchPointer(event.pointerId);
-    this.handleTouchGestureEnd();
+    this.handleTouchGestureEnd(event.timeStamp);
     this.clearTouchInput();
   };
 
@@ -1499,8 +1518,12 @@ export class BreakoutGame {
     this.renderer.domElement.style.cursor = this.isRestartButtonHit(clientX, clientY) ? 'pointer' : '';
   }
 
-  private handleTouchGestureEnd(): void {
+  private updateTouchGesture(eventTime: number): void {
     if (!this.gameStarted || this.isGameFinished() || this.isFatalMissSequenceActive()) {
+      return;
+    }
+
+    if (this.touchSwipeCommitted) {
       return;
     }
 
@@ -1508,10 +1531,44 @@ export class BreakoutGame {
     const deltaY = this.touchLastY - this.touchStartY;
     const absX = Math.abs(deltaX);
     const absY = Math.abs(deltaY);
-    const isVerticalSwipe = absY >= TOUCH_SWIPE_MIN_DISTANCE && absY > absX * TOUCH_SWIPE_AXIS_RATIO;
 
-    if (isVerticalSwipe) {
+    if (this.touchGestureIntent === 'pending' && Math.max(absX, absY) >= TOUCH_GESTURE_LOCK_DISTANCE) {
+      if (absY > absX * TOUCH_SWIPE_AXIS_RATIO) {
+        this.touchGestureIntent = 'vertical-swipe';
+        this.touchPaddleX = null;
+      } else if (absX > absY * TOUCH_PADDLE_AXIS_RATIO) {
+        this.touchGestureIntent = 'paddle';
+      }
+    }
+
+    if (this.touchGestureIntent !== 'vertical-swipe') {
+      return;
+    }
+
+    if (absY >= this.touchSwipeCommitDistance(absY, eventTime)) {
+      this.touchSwipeCommitted = true;
       this.navigateInstances(deltaY < 0 ? 1 : -1);
+    }
+  }
+
+  private touchSwipeCommitDistance(absY: number, eventTime: number): number {
+    const elapsed = Math.max(eventTime - this.touchStartTime, 1);
+    const velocity = absY / elapsed;
+    const amount = clamp(
+      (velocity - TOUCH_SWIPE_SLOW_VELOCITY) / (TOUCH_SWIPE_FAST_VELOCITY - TOUCH_SWIPE_SLOW_VELOCITY),
+      0,
+      1
+    );
+    return lerp(TOUCH_SWIPE_SLOW_DISTANCE, TOUCH_SWIPE_FAST_DISTANCE, amount);
+  }
+
+  private handleTouchGestureEnd(eventTime: number): void {
+    if (!this.gameStarted || this.isGameFinished() || this.isFatalMissSequenceActive()) {
+      return;
+    }
+
+    this.updateTouchGesture(eventTime);
+    if (this.touchSwipeCommitted || this.touchGestureIntent === 'vertical-swipe') {
       return;
     }
 
@@ -1530,6 +1587,9 @@ export class BreakoutGame {
 
   private clearTouchInput(): void {
     this.activeTouchPointerId = null;
+    this.touchStartTime = 0;
+    this.touchGestureIntent = 'pending';
+    this.touchSwipeCommitted = false;
     this.touchPaddleX = null;
   }
 
