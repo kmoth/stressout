@@ -231,9 +231,11 @@ const PAUSE_MENU_BUTTON_Y = -0.58;
 const PAUSE_MENU_Z = MAIN_MENU_BUTTON_Z + 0.22;
 const SPLIT_TUTORIAL_STORAGE_KEY = 'breakoutoutout.splitTutorialSeen';
 const SPLIT_TUTORIAL_DURATION = 5;
-const SPLIT_TUTORIAL_WORLD_HEIGHT = 1.18;
-const SPLIT_TUTORIAL_MAX_WIDTH = 8.8;
+const SPLIT_TUTORIAL_WORLD_HEIGHT = 2.4;
+const SPLIT_TUTORIAL_MAX_WIDTH = 9.8;
+const SPLIT_TUTORIAL_Y_OFFSET = 0.75;
 const SPLIT_TUTORIAL_Z_OFFSET = 1.1;
+const SPLIT_TUTORIAL_KEYCAP_SIZE = 76;
 // Change this value to tune the visual z-thickness of the playfield box meshes.
 const PLAYFIELD_MESH_DEPTH = PLAYFIELD_DEPTH;
 const PLAYFIELD_MESH_DEPTH_BASELINE = 0.55;
@@ -3679,7 +3681,7 @@ export class BreakoutGame {
 
     this.splitTutorial.mesh.position.set(
       this.cameraLookAtX,
-      this.cameraLookAtY,
+      this.cameraLookAtY + SPLIT_TUTORIAL_Y_OFFSET,
       this.cameraFocusZ + SPLIT_TUTORIAL_Z_OFFSET
     );
     this.splitTutorial.mesh.quaternion.copy(this.camera.quaternion);
@@ -6008,8 +6010,8 @@ class SplitTutorialView {
   private texture: THREE.CanvasTexture;
   private mode: SplitTutorialMode | null = null;
 
-  cssWidth = 760;
-  cssHeight = 150;
+  cssWidth = 980;
+  cssHeight = 240;
 
   constructor(renderOrder: number) {
     const context = this.canvas.getContext('2d');
@@ -6070,9 +6072,8 @@ class SplitTutorialView {
     this.context.textBaseline = 'middle';
     this.context.shadowColor = 'rgba(0, 0, 0, 0.92)';
     this.context.shadowBlur = 12;
-    this.context.lineWidth = 5;
+    this.context.lineWidth = 8;
     this.context.strokeStyle = 'rgba(0, 0, 0, 0.72)';
-    this.context.font = `900 32px ${HUD_FONT_FAMILY}`;
 
     if (this.mode === 'touch') {
       this.drawMobileTutorial();
@@ -6086,27 +6087,35 @@ class SplitTutorialView {
 
   private drawKeyboardTutorial(): void {
     const text = 'change dimension with';
-    const textX = 300;
-    const centerY = 76;
-    this.context.strokeText(text, textX, centerY);
+    const textX = this.cssWidth / 2;
+    const textY = 70;
+    const keycapY = 162;
+    const keycapGap = 22;
+    const leftKeyX = this.cssWidth / 2 - (SPLIT_TUTORIAL_KEYCAP_SIZE + keycapGap) / 2;
+    const rightKeyX = this.cssWidth / 2 + (SPLIT_TUTORIAL_KEYCAP_SIZE + keycapGap) / 2;
+    this.context.font = `900 72px ${HUD_FONT_FAMILY}`;
+    this.context.strokeText(text, textX, textY);
     this.context.fillStyle = '#f8fafc';
-    this.context.fillText(text, textX, centerY);
+    this.context.fillText(text, textX, textY);
     this.context.shadowBlur = 6;
-    this.drawKeycap(565, 76, '↑');
-    this.drawKeycap(632, 76, '↓');
+    this.drawKeycap(leftKeyX, keycapY, '↑');
+    this.drawKeycap(rightKeyX, keycapY, '↓');
   }
 
   private drawMobileTutorial(): void {
     const text = 'change dimension with swipe up/down';
-    this.context.strokeText(text, 352, 76);
+    const textY = 70;
+    const glyphY = 162;
+    this.context.font = `900 56px ${HUD_FONT_FAMILY}`;
+    this.context.strokeText(text, this.cssWidth / 2, textY);
     this.context.fillStyle = '#f8fafc';
-    this.context.fillText(text, 352, 76);
-    this.drawSwipeGlyph(662, 76);
+    this.context.fillText(text, this.cssWidth / 2, textY);
+    this.drawSwipeGlyph(this.cssWidth / 2, glyphY);
   }
 
   private drawKeycap(centerX: number, centerY: number, label: string): void {
-    const width = 54;
-    const height = 54;
+    const width = SPLIT_TUTORIAL_KEYCAP_SIZE;
+    const height = SPLIT_TUTORIAL_KEYCAP_SIZE;
     const x = centerX - width / 2;
     const y = centerY - height / 2;
 
@@ -6120,7 +6129,7 @@ class SplitTutorialView {
     this.context.lineWidth = 3;
     this.context.strokeStyle = '#38bdf8';
     this.context.stroke();
-    this.context.font = `900 30px ${HUD_FONT_FAMILY}`;
+    this.context.font = `900 42px ${HUD_FONT_FAMILY}`;
     this.context.fillStyle = '#07111a';
     this.context.textAlign = 'center';
     this.context.textBaseline = 'middle';
