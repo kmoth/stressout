@@ -2211,7 +2211,7 @@ export class BreakoutGame {
     }
 
     submission.state = 'submitting';
-    submission.message = 'VERIFYING';
+    submission.message = 'SAVING';
     void this.submitLeaderboardEntryAsync(submission);
   }
 
@@ -5439,7 +5439,7 @@ class LeaderboardPanelPlane {
 
     this.context.font = `800 15px ${HUD_FONT_FAMILY}`;
     this.context.fillStyle = state.mode === 'submitting' ? '#a7f3d0' : 'rgba(244, 249, 248, 0.58)';
-    this.context.fillText(state.mode === 'submitting' ? 'VERIFYING' : 'ENTER SAVE   ESC SKIP', this.cssWidth / 2, 500);
+    this.context.fillText(state.mode === 'submitting' ? 'SAVING' : 'ENTER SAVE   ESC SKIP', this.cssWidth / 2, 500);
   }
 
   private drawFooterMessage(message: string, fill: string): void {
