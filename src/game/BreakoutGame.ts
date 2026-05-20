@@ -6103,14 +6103,17 @@ class SplitTutorialView {
   }
 
   private drawMobileTutorial(): void {
-    const text = 'change dimension with swipe up/down';
-    const textY = 70;
-    const glyphY = 162;
-    this.context.font = `900 56px ${HUD_FONT_FAMILY}`;
-    this.context.strokeText(text, this.cssWidth / 2, textY);
+    const topLine = 'change dimension';
+    const bottomLine = 'with swipe up/down';
+    const centerX = this.cssWidth / 2;
+    const topLineY = 74;
+    const bottomLineY = 146;
+    this.context.font = `900 62px ${HUD_FONT_FAMILY}`;
+    this.context.strokeText(topLine, centerX, topLineY);
+    this.context.strokeText(bottomLine, centerX, bottomLineY);
     this.context.fillStyle = '#f8fafc';
-    this.context.fillText(text, this.cssWidth / 2, textY);
-    this.drawSwipeGlyph(this.cssWidth / 2, glyphY);
+    this.context.fillText(topLine, centerX, topLineY);
+    this.context.fillText(bottomLine, centerX, bottomLineY);
   }
 
   private drawKeycap(centerX: number, centerY: number, label: string): void {
@@ -6134,35 +6137,6 @@ class SplitTutorialView {
     this.context.textAlign = 'center';
     this.context.textBaseline = 'middle';
     this.context.fillText(label, centerX, centerY - 1);
-    this.context.restore();
-  }
-
-  private drawSwipeGlyph(centerX: number, centerY: number): void {
-    this.context.save();
-    this.context.strokeStyle = '#7dd3fc';
-    this.context.fillStyle = '#7dd3fc';
-    this.context.lineWidth = 5;
-    this.context.lineCap = 'round';
-    this.context.beginPath();
-    this.context.moveTo(centerX, centerY + 32);
-    this.context.lineTo(centerX, centerY - 32);
-    this.context.stroke();
-    this.drawTriangle(centerX, centerY - 43, 0);
-    this.drawTriangle(centerX, centerY + 43, Math.PI);
-    this.context.restore();
-  }
-
-  private drawTriangle(centerX: number, centerY: number, rotation: number): void {
-    const radius = 10;
-    this.context.save();
-    this.context.translate(centerX, centerY);
-    this.context.rotate(rotation);
-    this.context.beginPath();
-    this.context.moveTo(0, -radius);
-    this.context.lineTo(radius * 0.9, radius * 0.7);
-    this.context.lineTo(-radius * 0.9, radius * 0.7);
-    this.context.closePath();
-    this.context.fill();
     this.context.restore();
   }
 
