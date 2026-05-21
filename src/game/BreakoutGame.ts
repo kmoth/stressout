@@ -233,10 +233,10 @@ const MAIN_MENU_BUTTON_WORLD_HEIGHT = 1.02;
 const MAIN_MENU_BUTTON_MAX_WIDTH = 5.35;
 const MAIN_MENU_START_BUTTON_Y = -0.68;
 const MAIN_MENU_LEADERBOARD_BUTTON_Y = -1.78;
-const MAIN_MENU_LEADERBOARD_PANEL_WORLD_HEIGHT = 4;
-const MAIN_MENU_LEADERBOARD_PANEL_MAX_WIDTH = 5.6;
-const MAIN_MENU_LEADERBOARD_PANEL_X = 4.95;
-const MAIN_MENU_LEADERBOARD_PANEL_Y = -1.8;
+const MAIN_MENU_LEADERBOARD_PANEL_WORLD_HEIGHT = LEADERBOARD_PANEL_WORLD_HEIGHT;
+const MAIN_MENU_LEADERBOARD_PANEL_MAX_WIDTH = LEADERBOARD_PANEL_MAX_WIDTH;
+const MAIN_MENU_LEADERBOARD_PANEL_X = 0;
+const MAIN_MENU_LEADERBOARD_PANEL_Y = 0;
 const MAIN_MENU_BUTTON_Z = 0.18;
 const PAUSE_MENU_RENDER_ORDER = MAIN_MENU_RENDER_ORDER + 10;
 const PAUSE_MENU_CAMERA_DISTANCE = MAIN_MENU_CAMERA_DISTANCE - 0.2;
@@ -1073,7 +1073,7 @@ export class BreakoutGame {
       minHeight: 76,
       background: 'rgba(7, 10, 15, 0.88)',
       border: 'rgba(167, 243, 208, 0.7)',
-      borderWidth: 2,
+      borderWidth: 4,
       radius: 6,
       renderOrder: PLANE_HUD_RENDER_ORDER + 1
     });
@@ -5673,7 +5673,7 @@ class EndGamePromptPlane {
 class LeaderboardPanelPlane {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   readonly cssWidth = 720;
-  readonly cssHeight = 520;
+  readonly cssHeight = Math.round(this.cssWidth * BOARD_HEIGHT / BOARD_WIDTH);
 
   private readonly canvas = document.createElement('canvas');
   private readonly context: CanvasRenderingContext2D;
@@ -5741,8 +5741,11 @@ class LeaderboardPanelPlane {
     context.fillRect(0, 0, this.cssWidth, this.cssHeight);
 
     this.drawHeader(state.score);
-    this.drawEntries(state.entries);
-    this.drawFooter(state);
+    if (state.mode === 'view') {
+      this.drawEntries(state.entries);
+    } else {
+      this.drawFooter(state);
+    }
 
     this.texture.needsUpdate = true;
   }
@@ -5750,34 +5753,35 @@ class LeaderboardPanelPlane {
   private drawHeader(score: number): void {
     this.context.textBaseline = 'middle';
     this.context.textAlign = 'left';
-    this.context.font = `900 32px ${HUD_FONT_FAMILY}`;
+    this.context.font = `900 56px ${HUD_FONT_FAMILY}`;
     this.context.fillStyle = '#f8fafc';
-    this.context.fillText('TOP 10', 52, 58);
+    this.context.fillText('TOP 10', 58, 96);
 
     this.context.textAlign = 'right';
-    this.context.font = `800 22px ${HUD_FONT_FAMILY}`;
+    this.context.font = `800 38px ${HUD_FONT_FAMILY}`;
     this.context.fillStyle = '#f0c95d';
-    this.context.fillText(`SCORE ${formatLeaderboardScore(score)}`, this.cssWidth - 52, 58);
+    this.context.fillText(`SCORE ${formatLeaderboardScore(score)}`, this.cssWidth - 58, 96);
 
     this.context.globalAlpha = 0.22;
     this.context.strokeStyle = '#a7f3d0';
+    this.context.lineWidth = 2;
     this.context.beginPath();
-    this.context.moveTo(52, 92);
-    this.context.lineTo(this.cssWidth - 52, 92);
+    this.context.moveTo(58, 160);
+    this.context.lineTo(this.cssWidth - 58, 160);
     this.context.stroke();
     this.context.globalAlpha = 1;
   }
 
   private drawEntries(entries: readonly LeaderboardEntry[]): void {
-    const rowTop = 110;
-    const rowHeight = 28;
+    const rowTop = 220;
+    const rowHeight = 58;
 
     if (entries.length === 0) {
       this.context.textAlign = 'center';
       this.context.textBaseline = 'middle';
-      this.context.font = `800 24px ${HUD_FONT_FAMILY}`;
+      this.context.font = `800 42px ${HUD_FONT_FAMILY}`;
       this.context.fillStyle = 'rgba(244, 249, 248, 0.62)';
-      this.context.fillText('NO SCORES YET', this.cssWidth / 2, rowTop + rowHeight * 4.7);
+      this.context.fillText('NO SCORES YET', this.cssWidth / 2, this.cssHeight / 2);
       return;
     }
 
@@ -5787,36 +5791,41 @@ class LeaderboardPanelPlane {
       const entry = entries[index];
       this.context.globalAlpha = index % 2 === 0 ? 0.08 : 0.035;
       this.context.fillStyle = '#a7f3d0';
-      roundedRectPath(this.context, 50, y - 12, this.cssWidth - 100, 24, 4);
+      roundedRectPath(this.context, 58, y - 23, this.cssWidth - 116, 46, 6);
       this.context.fill();
       this.context.globalAlpha = entry ? 1 : 0.35;
 
       this.context.textAlign = 'right';
-      this.context.font = `800 18px ${HUD_FONT_FAMILY}`;
+      this.context.font = `800 28px ${HUD_FONT_FAMILY}`;
       this.context.fillStyle = '#7dd3fc';
-      this.context.fillText(String(index + 1).padStart(2, '0'), 86, y);
+      this.context.fillText(String(index + 1).padStart(2, '0'), 108, y);
 
       this.context.textAlign = 'left';
-      this.context.font = `900 20px ${HUD_FONT_FAMILY}`;
+      this.context.font = `900 34px ${HUD_FONT_FAMILY}`;
       this.context.fillStyle = '#f8fafc';
-      this.context.fillText(entry?.name ?? '------', 112, y);
+      this.context.fillText(entry?.name ?? '------', 150, y);
 
       this.context.textAlign = 'right';
-      this.context.font = `800 20px ${HUD_FONT_FAMILY}`;
+      this.context.font = `800 34px ${HUD_FONT_FAMILY}`;
       this.context.fillStyle = '#f0c95d';
-      this.context.fillText(entry ? formatLeaderboardScore(entry.score) : '-----', this.cssWidth - 58, y);
+      this.context.fillText(entry ? formatLeaderboardScore(entry.score) : '-----', this.cssWidth - 70, y);
     }
 
     this.context.globalAlpha = 1;
   }
 
   private drawFooter(state: LeaderboardPanelState): void {
-    const footerTop = 405;
+    if (state.mode === 'view') {
+      return;
+    }
+
+    const footerTop = 840;
     this.context.globalAlpha = 0.22;
     this.context.strokeStyle = '#a7f3d0';
+    this.context.lineWidth = 2;
     this.context.beginPath();
-    this.context.moveTo(52, footerTop - 20);
-    this.context.lineTo(this.cssWidth - 52, footerTop - 20);
+    this.context.moveTo(58, footerTop - 20);
+    this.context.lineTo(this.cssWidth - 58, footerTop - 20);
     this.context.stroke();
     this.context.globalAlpha = 1;
 
@@ -5876,9 +5885,9 @@ class LeaderboardPanelPlane {
   private drawFooterMessage(message: string, fill: string): void {
     this.context.textAlign = 'center';
     this.context.textBaseline = 'middle';
-    this.context.font = `900 26px ${HUD_FONT_FAMILY}`;
+    this.context.font = `900 46px ${HUD_FONT_FAMILY}`;
     this.context.fillStyle = fill;
-    this.context.fillText(message, this.cssWidth / 2, 450);
+    this.context.fillText(message, this.cssWidth / 2, this.cssHeight / 2);
   }
 
   private resizeCanvas(width: number, height: number): void {
@@ -5971,7 +5980,7 @@ class MainMenuView {
 
     this.leaderboardPanel.mesh.position.set(
       MAIN_MENU_LEADERBOARD_PANEL_X,
-      MAIN_MENU_LEADERBOARD_PANEL_Y + MAIN_MENU_VERTICAL_SHIFT_Y,
+      MAIN_MENU_LEADERBOARD_PANEL_Y,
       MAIN_MENU_BUTTON_Z + 0.04
     );
     scaleMenuCanvasPlane(
@@ -6007,6 +6016,16 @@ class MainMenuView {
 
   setLeaderboardVisible(visible: boolean): void {
     this.leaderboardPanel.mesh.visible = visible;
+    this.title.mesh.visible = !visible;
+    this.subtitle.mesh.visible = !visible;
+    this.buttons.get('start')?.setVisible(!visible);
+    const leaderboardButton = this.buttons.get('leaderboard');
+    if (leaderboardButton) {
+      leaderboardButton.setLabel(visible ? 'BACK' : 'LEADERBOARD');
+      leaderboardButton.mesh.position.y = visible
+        ? LEADERBOARD_VIEW_BACK_Y
+        : MAIN_MENU_LEADERBOARD_BUTTON_Y + MAIN_MENU_VERTICAL_SHIFT_Y;
+    }
   }
 
   setLeaderboardState(state: LeaderboardPanelState): void {
@@ -6315,10 +6334,10 @@ class MenuButtonPlane {
   private readonly canvas = document.createElement('canvas');
   private readonly context: CanvasRenderingContext2D;
   private readonly material: THREE.MeshBasicMaterial;
-  private readonly label: string;
   private readonly variant: MenuButtonVariant;
   private readonly fontSize: number;
   private texture: THREE.CanvasTexture;
+  private label: string;
   private hovered = false;
   private pressed = false;
 
@@ -6371,10 +6390,25 @@ class MenuButtonPlane {
     this.draw();
   }
 
+  setLabel(label: string): void {
+    if (this.label === label) {
+      return;
+    }
+
+    this.label = label;
+    this.draw();
+  }
+
+  setVisible(visible: boolean): void {
+    this.mesh.visible = visible;
+  }
+
   private draw(): void {
     const radius = 8;
     const primary = this.variant === 'primary';
-    const borderWidth = this.hovered ? 3 : 2;
+    const borderWidth = primary
+      ? this.hovered ? 3 : 2
+      : this.hovered ? 5 : 4;
     const fill = primary
       ? this.pressed
         ? '#d9a832'
