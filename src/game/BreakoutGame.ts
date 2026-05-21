@@ -602,6 +602,38 @@ export class BreakoutGame {
   private readonly ballSpeedMultiplierActiveGameCap: number;
   private readonly instanceOptions: BreakoutoutoutOptions;
   private readonly instanceSoundPosition = new THREE.Vector3();
+  private readonly instanceEventBuffer: BreakoutoutoutEvent[] = [];
+  private readonly liveInput: BreakoutInput = { left: false, right: false };
+  private readonly selectedCameraState = createEmptyRenderState();
+  private readonly fatalCameraState = createEmptyRenderState();
+  private readonly autopilotSelectedState = createEmptyRenderState();
+  private readonly autopilotCandidateState = createEmptyRenderState();
+  private readonly cameraShake = { x: 0, y: 0, roll: 0 };
+  private readonly splitBloomIntensityByInstance = new Map<BreakoutoutoutInstance, number>();
+  private readonly completedSplitBloomInstances: BreakoutoutoutInstance[] = [];
+  private readonly projectorDebugActiveBricks: BrickSnapshot[] = [];
+  private readonly projectorDebugObstacles: TrajectoryObstacle[] = [];
+  private readonly endGamePromptScratch: EndGamePromptState = {
+    visible: false,
+    score: 0,
+    name: '',
+    mode: 'none',
+    message: ''
+  };
+  private readonly leaderboardListPanelScratch: LeaderboardPanelState = {
+    mode: 'loading',
+    entries: [],
+    score: 0,
+    name: '',
+    message: ''
+  };
+  private readonly mainMenuLeaderboardPanelScratch: LeaderboardPanelState = {
+    mode: 'loading',
+    entries: [],
+    score: 0,
+    name: '',
+    message: ''
+  };
   private readonly instances: BreakoutoutoutInstance[] = [];
   private readonly views = new Set<InstanceView>();
   private readonly instanceGlitchLevels = new Map<BreakoutoutoutInstance, number>();
@@ -931,7 +963,7 @@ export class BreakoutGame {
   }
 
   private createInstanceView(instance: BreakoutoutoutInstance, trackIndex: number): InstanceView {
-    const state = instance.getRenderState();
+    const state = instance.getRenderState(createEmptyRenderState());
     const group = new THREE.Group();
     const paddleMesh = this.createPaddleMesh();
     const ballMesh = this.createBallMesh();
@@ -1823,7 +1855,7 @@ export class BreakoutGame {
           const input = allowPaddleInput && !this.autopilot && index === this.selectedIndex && instance.isActive()
             ? this.currentInput
             : IDLE_INPUT;
-          this.handleInstanceEvents(instance, instance.step(FIXED_STEP, input));
+          this.handleInstanceEvents(instance, instance.step(FIXED_STEP, input, this.instanceEventBuffer));
         }
         this.accumulator -= FIXED_STEP;
       }
@@ -1973,7 +2005,7 @@ export class BreakoutGame {
       return true;
     }
 
-    return this.instances.some((instance) => isTerminalPhase(instance.getRenderState().phase));
+    return this.instances.some((instance) => isTerminalPhase(instance.getPhase()));
   }
 
   private resetGame(instanceCount: number, options: BreakoutoutoutOptions): void {
@@ -2060,7 +2092,7 @@ export class BreakoutGame {
     this.projectorDebugBricks = createProjectorDebugBricks();
     this.invalidateTrajectoryProjectionCaches();
     for (const view of this.views) {
-      for (const [id, mesh] of [...view.bricks]) {
+      for (const [id, mesh] of view.bricks) {
         this.removeBrickMesh(view, id, mesh);
       }
     }
@@ -2088,13 +2120,25 @@ export class BreakoutGame {
     let y = ball.y;
     let directionX = ball.vx / speed;
     let directionY = ball.vy / speed;
-    const activeBricks = this.projectorDebugBricks.filter((brick) => !brick.hit);
-    const obstacles = activeBricks.map((brick) => ({
-      x: brick.x,
-      y: brick.y,
-      width: brick.width,
-      height: brick.height
-    }));
+    const activeBricks = this.projectorDebugActiveBricks;
+    const obstacles = this.projectorDebugObstacles;
+    activeBricks.length = 0;
+    let obstacleCount = 0;
+    for (const brick of this.projectorDebugBricks) {
+      if (brick.hit) {
+        continue;
+      }
+
+      activeBricks.push(brick);
+      const obstacle = obstacles[obstacleCount] ?? { x: 0, y: 0, width: 0, height: 0 };
+      obstacle.x = brick.x;
+      obstacle.y = brick.y;
+      obstacle.width = brick.width;
+      obstacle.height = brick.height;
+      obstacles[obstacleCount] = obstacle;
+      obstacleCount += 1;
+    }
+    obstacles.length = obstacleCount;
 
     for (
       let collisionCount = 0;
@@ -2188,12 +2232,31 @@ export class BreakoutGame {
     };
   }
 
-  private createProjectorDebugRenderState(instance: BreakoutoutoutInstance): BreakoutoutoutRenderState {
-    return {
-      ...this.createProjectorDebugSnapshot(),
-      id: instance.id,
-      bricks: this.projectorDebugBricks
-    };
+  private createProjectorDebugRenderState(
+    instance: BreakoutoutoutInstance,
+    target: BreakoutoutoutRenderState
+  ): BreakoutoutoutRenderState {
+    target.id = instance.id;
+    target.score = 0;
+    target.lives = 3;
+    target.phase = 'playing';
+    target.readyRemaining = 0;
+    target.fatalMissPending = false;
+    target.paddleX = 0;
+    target.targetPaddleX = 0;
+    target.autoPilotRemaining = 0;
+    target.autoPilotActive = false;
+    target.persistentAutoPilotActive = false;
+    target.pathProjectionRemaining = 1;
+    target.pathProjectionActive = true;
+    target.ballSpeedMultiplier = 1;
+    const ball = this.projectorDebugTestBall;
+    target.ball.x = ball?.x ?? 0;
+    target.ball.y = ball?.y ?? PADDLE_Y;
+    target.ball.vx = ball?.vx ?? Math.sin(this.projectorDebugAngle) * PROJECTOR_DEBUG_BEAM_SPEED;
+    target.ball.vy = ball?.vy ?? Math.cos(this.projectorDebugAngle) * PROJECTOR_DEBUG_BEAM_SPEED;
+    target.bricks = this.projectorDebugBricks;
+    return target;
   }
 
   private createProjectorDebugBall(speed = PROJECTOR_DEBUG_BEAM_SPEED): BreakoutoutoutSnapshot['ball'] {
@@ -2245,7 +2308,7 @@ export class BreakoutGame {
       this.invalidateTrajectoryProjectionCacheForInstance(instance);
     }
 
-    if (instance.getRenderState().phase === 'game-over') {
+    if (instance.getPhase() === 'game-over') {
       if (this.isFatalMissSequenceActive() && instance !== this.fatalMissInstance) {
         return;
       }
@@ -2461,44 +2524,43 @@ export class BreakoutGame {
 
   private endGamePromptState(visible: boolean): EndGamePromptState {
     const submission = this.leaderboardSubmission;
+    const state = this.endGamePromptScratch;
     if (!visible || !submission) {
-      return {
-        visible: false,
-        score: this.globalScore,
-        name: '',
-        mode: 'none',
-        message: ''
-      };
+      state.visible = false;
+      state.score = this.globalScore;
+      state.name = '';
+      state.mode = 'none';
+      state.message = '';
+      return state;
     }
 
-    return {
-      visible: true,
-      score: submission.score,
-      name: submission.name,
-      mode: submission.state,
-      message: submission.message ?? ''
-    };
+    state.visible = true;
+    state.score = submission.score;
+    state.name = submission.name;
+    state.mode = submission.state;
+    state.message = submission.message ?? '';
+    return state;
   }
 
   private leaderboardListPanelState(): LeaderboardPanelState {
     const submission = this.leaderboardSubmission;
-    return {
-      mode: this.leaderboardLoadState === 'ready' ? 'view' : this.leaderboardLoadState,
-      entries: this.leaderboardEntries,
-      score: submission?.score ?? this.globalScore,
-      name: '',
-      message: ''
-    };
+    const state = this.leaderboardListPanelScratch;
+    state.mode = this.leaderboardLoadState === 'ready' ? 'view' : this.leaderboardLoadState;
+    state.entries = this.leaderboardEntries;
+    state.score = submission?.score ?? this.globalScore;
+    state.name = '';
+    state.message = '';
+    return state;
   }
 
   private mainMenuLeaderboardPanelState(): LeaderboardPanelState {
-    return {
-      mode: this.leaderboardLoadState === 'ready' ? 'view' : this.leaderboardLoadState,
-      entries: this.leaderboardEntries,
-      score: 0,
-      name: '',
-      message: ''
-    };
+    const state = this.mainMenuLeaderboardPanelScratch;
+    state.mode = this.leaderboardLoadState === 'ready' ? 'view' : this.leaderboardLoadState;
+    state.entries = this.leaderboardEntries;
+    state.score = 0;
+    state.name = '';
+    state.message = '';
+    return state;
   }
 
   private updateMainMenuLeaderboard(): void {
@@ -2733,8 +2795,10 @@ export class BreakoutGame {
     if (this.splitBloomPulses.length === 0) {
       if (this.splitGlowActiveInstances.size > 0) {
         for (const instance of this.splitGlowActiveInstances) {
-          for (const view of this.viewsForInstance(instance)) {
-            this.updateSplitGlowIntensity(view, 0);
+          for (const view of this.views) {
+            if (view.instance === instance) {
+              this.updateSplitGlowIntensity(view, 0);
+            }
           }
         }
         this.splitGlowActiveInstances.clear();
@@ -2742,7 +2806,8 @@ export class BreakoutGame {
       return;
     }
 
-    const intensityByInstance = new Map<BreakoutoutoutInstance, number>();
+    const intensityByInstance = this.splitBloomIntensityByInstance;
+    intensityByInstance.clear();
 
     for (let index = this.splitBloomPulses.length - 1; index >= 0; index -= 1) {
       const pulse = this.splitBloomPulses[index];
@@ -2761,12 +2826,15 @@ export class BreakoutGame {
       );
     }
 
-    const completedInstances: BreakoutoutoutInstance[] = [];
+    const completedInstances = this.completedSplitBloomInstances;
+    completedInstances.length = 0;
     for (const instance of this.splitGlowActiveInstances) {
-      const views = this.viewsForInstance(instance);
       const hasActivePulse = intensityByInstance.has(instance);
-      for (const view of views) {
-        this.updateSplitGlowIntensity(view, clamp(intensityByInstance.get(instance) ?? 0, 0, 1));
+      const intensity = clamp(intensityByInstance.get(instance) ?? 0, 0, 1);
+      for (const view of this.views) {
+        if (view.instance === instance) {
+          this.updateSplitGlowIntensity(view, intensity);
+        }
       }
 
       if (!hasActivePulse) {
@@ -2896,27 +2964,25 @@ export class BreakoutGame {
   private syncViews(time: number): void {
     for (const view of this.views) {
       const state = this.projectorDebug
-        ? this.createProjectorDebugRenderState(view.instance)
-        : this.renderStateForInstance(view.instance);
-      view.renderState = state;
+        ? this.createProjectorDebugRenderState(view.instance, view.renderState)
+        : this.renderStateForInstance(view.instance, view.renderState);
       this.syncInstanceView(view, state, time);
     }
   }
 
-  private renderStateForInstance(instance: BreakoutoutoutInstance): BreakoutoutoutRenderState {
-    const state: BreakoutoutoutRenderState = {
-      ...instance.getRenderState(),
-      score: this.globalScore
-    };
+  private renderStateForInstance(
+    instance: BreakoutoutoutInstance,
+    target: BreakoutoutoutRenderState
+  ): BreakoutoutoutRenderState {
+    const state = instance.getRenderState(target);
+    state.score = this.globalScore;
 
     if (!this.pathProjectionDebug || state.phase !== 'playing') {
       return state;
     }
 
-    return {
-      ...state,
-      pathProjectionActive: true
-    };
+    state.pathProjectionActive = true;
+    return state;
   }
 
   private syncInstanceView(view: InstanceView, state: BreakoutoutoutRenderState, time: number): void {
@@ -3107,22 +3173,22 @@ export class BreakoutGame {
   }
 
   private trajectoryProjectionCacheKey(state: BreakoutoutoutRenderState, input: BreakoutInput): string {
-    return [
-      this.projectorDebug
-        ? `debug:${this.projectorDebugAngle.toFixed(5)}`
-        : this.pathProjectionDebug
-          ? 'path-debug'
-          : 'game',
-      trajectoryProjectionPathSettingsSignature(this.projectorBeamSettings),
-      trajectoryProjectionInputSignature(input),
-      trajectoryProjectionBrickSignature(state.bricks)
-    ].join('|');
+    const mode = this.projectorDebug
+      ? `debug:${this.projectorDebugAngle.toFixed(5)}`
+      : this.pathProjectionDebug
+        ? 'path-debug'
+        : 'game';
+    return `${mode}|${trajectoryProjectionPathSettingsSignature(this.projectorBeamSettings)}|${trajectoryProjectionInputSignature(input)}|${trajectoryProjectionBrickSignature(state.bricks)}`;
   }
 
   private removeBrickMesh(view: InstanceView, id: string, mesh: THREE.Mesh): void {
     view.bricks.delete(id);
     view.group.remove(mesh);
-    view.splitGlowMeshes = view.splitGlowMeshes.filter((entry) => entry.mesh.parent !== mesh);
+    for (let index = view.splitGlowMeshes.length - 1; index >= 0; index -= 1) {
+      if (view.splitGlowMeshes[index].mesh.parent === mesh) {
+        view.splitGlowMeshes.splice(index, 1);
+      }
+    }
     disposeObject(mesh);
   }
 
@@ -3321,6 +3387,10 @@ export class BreakoutGame {
         view.fatalGreyscaleApplied = false;
         this.restoreFatalMissGreyscaleVisuals(view, terminal, time);
       }
+      return;
+    }
+
+    if (view.fatalGreyscaleApplied) {
       return;
     }
 
@@ -3528,7 +3598,7 @@ export class BreakoutGame {
     }
 
     const selected = this.selectedInstance;
-    if (selected && autopilotPaddleApproachTime(selected.getRenderState()) !== null) {
+    if (selected && autopilotPaddleApproachTime(selected.getRenderState(this.autopilotSelectedState)) !== null) {
       return;
     }
 
@@ -3540,7 +3610,7 @@ export class BreakoutGame {
         continue;
       }
 
-      const approachTime = autopilotPaddleApproachTime(instance.getRenderState());
+      const approachTime = autopilotPaddleApproachTime(instance.getRenderState(this.autopilotCandidateState));
       if (approachTime === null || approachTime >= nextApproachTime) {
         continue;
       }
@@ -3815,10 +3885,10 @@ export class BreakoutGame {
 
   private updateCamera(delta: number): void {
     const selectedInstance = this.selectedInstance;
-    const selectedState = selectedInstance?.getRenderState();
+    const selectedState = selectedInstance?.getRenderState(this.selectedCameraState);
     const gameOverCameraActive = this.isGameOverCameraSequenceActive();
     const trackedState = gameOverCameraActive
-      ? this.fatalMissInstance?.getRenderState() ?? selectedState
+      ? this.fatalMissInstance?.getRenderState(this.fatalCameraState) ?? selectedState
       : selectedState;
     const ballX = trackedState ? clamp(trackedState.ball.x / HALF_WIDTH, -1, 1) : 0;
     const ballY = trackedState ? clamp(trackedState.ball.y / HALF_HEIGHT, -1, 1) : 0;
@@ -3869,17 +3939,20 @@ export class BreakoutGame {
   }
 
   private gameOverCameraShake(): { x: number; y: number; roll: number } {
+    const shake = this.cameraShake;
     if (!this.isGameOverCameraSequenceActive()) {
-      return { x: 0, y: 0, roll: 0 };
+      shake.x = 0;
+      shake.y = 0;
+      shake.roll = 0;
+      return shake;
     }
 
     const strength = clamp(this.gameOverCameraElapsed / GAME_OVER_CAMERA_SHAKE_RAMP_DURATION, 0, 1);
     const time = this.gameOverCameraElapsed;
-    return {
-      x: (Math.sin(time * 29.7) + Math.sin(time * 43.1 + 0.9) * 0.45) * GAME_OVER_CAMERA_SHAKE_X * strength,
-      y: (Math.sin(time * 31.4 + 1.7) + Math.sin(time * 19.8) * 0.5) * GAME_OVER_CAMERA_SHAKE_Y * strength,
-      roll: Math.sin(time * 37.5 + 0.4) * GAME_OVER_CAMERA_SHAKE_ROLL * strength
-    };
+    shake.x = (Math.sin(time * 29.7) + Math.sin(time * 43.1 + 0.9) * 0.45) * GAME_OVER_CAMERA_SHAKE_X * strength;
+    shake.y = (Math.sin(time * 31.4 + 1.7) + Math.sin(time * 19.8) * 0.5) * GAME_OVER_CAMERA_SHAKE_Y * strength;
+    shake.roll = Math.sin(time * 37.5 + 0.4) * GAME_OVER_CAMERA_SHAKE_ROLL * strength;
+    return shake;
   }
 
   private updatePlaneHudBillboards(): void {
@@ -3928,15 +4001,10 @@ export class BreakoutGame {
   }
 
   private get currentInput(): BreakoutInput {
-    const input: BreakoutInput = {
-      left: this.keys.has('ArrowLeft'),
-      right: this.keys.has('ArrowRight')
-    };
-
-    if (this.touchPaddleX !== null) {
-      input.paddleX = this.touchPaddleX;
-    }
-
+    const input = this.liveInput;
+    input.left = this.keys.has('ArrowLeft');
+    input.right = this.keys.has('ArrowRight');
+    input.paddleX = this.touchPaddleX ?? undefined;
     return input;
   }
 
@@ -3962,7 +4030,7 @@ export class BreakoutGame {
 
   private isFatalMissSequenceActive(): boolean {
     return !this.isGameFinished()
-      && this.fatalMissInstance?.getRenderState().fatalMissPending === true;
+      && this.fatalMissInstance?.hasFatalMissPending() === true;
   }
 
   private isGameFinished(): boolean {
@@ -4024,16 +4092,32 @@ export class BreakoutGame {
     return nearestView;
   }
 
-  private viewsForInstance(instance: BreakoutoutoutInstance): InstanceView[] {
-    const views: InstanceView[] = [];
-    for (const view of this.views) {
-      if (view.instance === instance) {
-        views.push(view);
-      }
-    }
+}
 
-    return views;
-  }
+function createEmptyRenderState(): BreakoutoutoutRenderState {
+  return {
+    id: 0,
+    score: 0,
+    lives: 0,
+    phase: 'ready',
+    readyRemaining: 0,
+    fatalMissPending: false,
+    paddleX: 0,
+    targetPaddleX: 0,
+    autoPilotRemaining: 0,
+    autoPilotActive: false,
+    persistentAutoPilotActive: false,
+    pathProjectionRemaining: 0,
+    pathProjectionActive: false,
+    ballSpeedMultiplier: 1,
+    ball: {
+      x: 0,
+      y: 0,
+      vx: 0,
+      vy: 0
+    },
+    bricks: []
+  };
 }
 
 function createProjectorDebugBricks(): BrickSnapshot[] {
@@ -4085,6 +4169,7 @@ class VhsGlitchPlane {
 
   private readonly canvas: HTMLCanvasElement;
   private readonly context: CanvasRenderingContext2D;
+  private readonly imageData: ImageData;
   private readonly texture: THREE.CanvasTexture;
   private readonly material: THREE.MeshBasicMaterial;
   private lastFrame = -1;
@@ -4100,6 +4185,7 @@ class VhsGlitchPlane {
 
     this.canvas = canvas;
     this.context = context;
+    this.imageData = context.createImageData(VHS_GLITCH_TEXTURE_WIDTH, VHS_GLITCH_TEXTURE_HEIGHT);
     this.texture = createHudCanvasTexture(canvas);
     this.texture.minFilter = THREE.NearestFilter;
     this.texture.magFilter = THREE.NearestFilter;
@@ -4161,8 +4247,9 @@ class VhsGlitchPlane {
 
   private drawStatic(intensity: number): void {
     const { width, height } = this.canvas;
-    const imageData = this.context.createImageData(width, height);
+    const imageData = this.imageData;
     const data = imageData.data;
+    data.fill(0);
     const density = 0.018 + intensity * 0.16;
 
     for (let y = 0; y < height; y += 1) {
@@ -4251,9 +4338,13 @@ class TrajectoryProjection {
   private readonly position = new THREE.Vector3();
   private readonly rotation = new THREE.Quaternion();
   private readonly scale = new THREE.Vector3(1, 1, 1);
+  private readonly segments: TrajectorySegment[] = [];
+  private readonly sampledPoint: TrajectoryPoint = { x: 0, y: 0 };
   private phaseDistance = 0;
   private lastUpdateTime: number | null = null;
-  private lastOrigin: TrajectoryPoint | null = null;
+  private hasLastOrigin = false;
+  private lastOriginX = 0;
+  private lastOriginY = 0;
 
   constructor() {
     const geometry = new THREE.CircleGeometry(1, 14);
@@ -4282,7 +4373,7 @@ class TrajectoryProjection {
   ): void {
     this.applySettings(settings);
     this.mesh.position.set(0, 0, 0);
-    const segments = createTrajectorySegments(points, settings);
+    const segments = writeTrajectorySegments(points, settings, this.segments);
     const lastSegment = segments[segments.length - 1];
     const totalLength = lastSegment ? lastSegment.distanceStart + lastSegment.length : 0;
 
@@ -4302,7 +4393,7 @@ class TrajectoryProjection {
     const glitchIntensity = vhsGlitchIntensityForLevel(glitchLevel);
 
     while (distance <= totalLength && dotIndex < dotLimit) {
-      const point = sampleTrajectorySegments(segments, distance);
+      const point = sampleTrajectorySegmentsInto(segments, distance, this.sampledPoint);
       this.position.set(
         point.x + vhsMeshTearOffset(point.y, time, glitchLevel, glitchIntensity),
         point.y,
@@ -4325,27 +4416,28 @@ class TrajectoryProjection {
     const directionX = (firstSegment.end.x - firstSegment.start.x) / firstSegment.length;
     const directionY = (firstSegment.end.y - firstSegment.start.y) / firstSegment.length;
     const lastTime = this.lastUpdateTime;
-    const lastOrigin = this.lastOrigin;
-    const hasLastPhase = lastTime !== null && lastOrigin !== null;
+    const hasLastPhase = lastTime !== null && this.hasLastOrigin;
     const delta = hasLastPhase ? time - lastTime : 0;
 
     if (!hasLastPhase || !Number.isFinite(delta) || delta < 0) {
       this.phaseDistance = 0;
     } else {
-      const originTravel = (firstSegment.start.x - lastOrigin.x) * directionX
-        + (firstSegment.start.y - lastOrigin.y) * directionY;
+      const originTravel = (firstSegment.start.x - this.lastOriginX) * directionX
+        + (firstSegment.start.y - this.lastOriginY) * directionY;
       this.phaseDistance += delta * settings.marchSpeed - originTravel;
       this.phaseDistance = positiveModulo(this.phaseDistance, settings.dotSpacing);
     }
 
     this.lastUpdateTime = time;
-    this.lastOrigin = { ...firstSegment.start };
+    this.hasLastOrigin = true;
+    this.lastOriginX = firstSegment.start.x;
+    this.lastOriginY = firstSegment.start.y;
   }
 
   resetPhase(): void {
     this.phaseDistance = 0;
     this.lastUpdateTime = null;
-    this.lastOrigin = null;
+    this.hasLastOrigin = false;
   }
 
   private applySettings(settings: ProjectorBeamSettings): void {
@@ -4372,14 +4464,19 @@ function createTrajectoryProjectionPath(
   let directionY = state.ball.vy / speed;
   let traveled = 0;
   const points: TrajectoryPoint[] = [{ x, y }];
-  const obstacles: TrajectoryObstacle[] = state.bricks
-    .filter((brick) => !brick.hit)
-    .map((brick) => ({
+  const obstacles: TrajectoryObstacle[] = [];
+  for (const brick of state.bricks) {
+    if (brick.hit) {
+      continue;
+    }
+
+    obstacles.push({
       x: brick.x,
       y: brick.y,
       width: brick.width,
       height: brick.height
-    }));
+    });
+  }
 
   for (let bounce = 0; bounce < settings.maxBounces; bounce += 1) {
     const paddleDistance = distanceToPaddleY(y, directionY, settings);
@@ -4474,10 +4571,8 @@ function nearestTrajectoryHit(
       continue;
     }
 
-    nearest = {
-      ...hit,
-      brickIndex: index
-    };
+    hit.brickIndex = index;
+    nearest = hit;
   }
 
   return nearest;
@@ -4643,6 +4738,43 @@ function createTrajectorySegments(
   return segments;
 }
 
+function writeTrajectorySegments(
+  points: readonly TrajectoryPoint[],
+  settings: ProjectorBeamSettings,
+  segments: TrajectorySegment[]
+): TrajectorySegment[] {
+  let segmentCount = 0;
+  let distanceStart = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    const start = points[index - 1];
+    const end = points[index];
+    const length = Math.hypot(end.x - start.x, end.y - start.y);
+    if (length <= settings.epsilon) {
+      continue;
+    }
+
+    const segment = segments[segmentCount] ?? {
+      start: { x: 0, y: 0 },
+      end: { x: 0, y: 0 },
+      length: 0,
+      distanceStart: 0
+    };
+    segment.start.x = start.x;
+    segment.start.y = start.y;
+    segment.end.x = end.x;
+    segment.end.y = end.y;
+    segment.length = length;
+    segment.distanceStart = distanceStart;
+    segments[segmentCount] = segment;
+    segmentCount += 1;
+    distanceStart += length;
+  }
+
+  segments.length = segmentCount;
+  return segments;
+}
+
 function sampleTrajectorySegments(segments: readonly TrajectorySegment[], distance: number): TrajectoryPoint {
   for (const segment of segments) {
     if (distance > segment.distanceStart + segment.length) {
@@ -4658,6 +4790,28 @@ function sampleTrajectorySegments(segments: readonly TrajectorySegment[], distan
 
   const fallback = segments[segments.length - 1]?.end;
   return fallback ? { ...fallback } : { x: 0, y: 0 };
+}
+
+function sampleTrajectorySegmentsInto(
+  segments: readonly TrajectorySegment[],
+  distance: number,
+  target: TrajectoryPoint
+): TrajectoryPoint {
+  for (const segment of segments) {
+    if (distance > segment.distanceStart + segment.length) {
+      continue;
+    }
+
+    const amount = clamp((distance - segment.distanceStart) / segment.length, 0, 1);
+    target.x = lerp(segment.start.x, segment.end.x, amount);
+    target.y = lerp(segment.start.y, segment.end.y, amount);
+    return target;
+  }
+
+  const fallback = segments[segments.length - 1]?.end;
+  target.x = fallback?.x ?? 0;
+  target.y = fallback?.y ?? 0;
+  return target;
 }
 
 function trimTrajectoryProjectionPath(
@@ -4759,35 +4913,26 @@ function nearestTrajectoryProgress(
 }
 
 function trajectoryProjectionPathSettingsSignature(settings: ProjectorBeamSettings): string {
-  return [
-    settings.maxBounces,
-    settings.maxDistance,
-    settings.epsilon,
-    settings.wallGuard,
-    settings.cornerTolerance,
-    settings.surfaceClearance
-  ].map(formatTrajectorySignatureNumber).join(',');
+  return `${formatTrajectorySignatureNumber(settings.maxBounces)},${formatTrajectorySignatureNumber(settings.maxDistance)},${formatTrajectorySignatureNumber(settings.epsilon)},${formatTrajectorySignatureNumber(settings.wallGuard)},${formatTrajectorySignatureNumber(settings.cornerTolerance)},${formatTrajectorySignatureNumber(settings.surfaceClearance)}`;
 }
 
 function trajectoryProjectionInputSignature(input: BreakoutInput): string {
-  return [
-    Number(input.left),
-    Number(input.right),
-    typeof input.paddleX === 'number' ? formatTrajectorySignatureNumber(input.paddleX) : ''
-  ].join(':');
+  return `${Number(input.left)}:${Number(input.right)}:${typeof input.paddleX === 'number' ? formatTrajectorySignatureNumber(input.paddleX) : ''}`;
 }
 
 function trajectoryProjectionBrickSignature(bricks: readonly BrickSnapshot[]): string {
-  return bricks
-    .filter((brick) => !brick.hit)
-    .map((brick) => [
-      brick.id,
-      formatTrajectorySignatureNumber(brick.x),
-      formatTrajectorySignatureNumber(brick.y),
-      formatTrajectorySignatureNumber(brick.width),
-      formatTrajectorySignatureNumber(brick.height)
-    ].join(':'))
-    .join('|');
+  let signature = '';
+  for (const brick of bricks) {
+    if (brick.hit) {
+      continue;
+    }
+
+    if (signature.length > 0) {
+      signature += '|';
+    }
+    signature += `${brick.id}:${formatTrajectorySignatureNumber(brick.x)}:${formatTrajectorySignatureNumber(brick.y)}:${formatTrajectorySignatureNumber(brick.width)}:${formatTrajectorySignatureNumber(brick.height)}`;
+  }
+  return signature;
 }
 
 function formatTrajectorySignatureNumber(value: number): string {
@@ -5542,7 +5687,11 @@ class EndGamePromptPlane {
   private readonly context: CanvasRenderingContext2D;
   private readonly material: THREE.MeshBasicMaterial;
   private texture: THREE.CanvasTexture;
-  private lastSignature = '';
+  private lastVisible = false;
+  private lastScore = Number.NaN;
+  private lastName = '';
+  private lastMode: EndGamePromptState['mode'] | null = null;
+  private lastMessage = '';
 
   hasContent = false;
 
@@ -5582,12 +5731,21 @@ class EndGamePromptPlane {
   }
 
   setState(state: EndGamePromptState): void {
-    const signature = JSON.stringify(state);
-    if (signature === this.lastSignature) {
+    if (
+      state.visible === this.lastVisible
+      && state.score === this.lastScore
+      && state.name === this.lastName
+      && state.mode === this.lastMode
+      && state.message === this.lastMessage
+    ) {
       return;
     }
 
-    this.lastSignature = signature;
+    this.lastVisible = state.visible;
+    this.lastScore = state.score;
+    this.lastName = state.name;
+    this.lastMode = state.mode;
+    this.lastMessage = state.message;
     this.hasContent = state.visible && state.mode !== 'none';
     this.draw(state);
   }
@@ -5679,7 +5837,11 @@ class LeaderboardPanelPlane {
   private readonly context: CanvasRenderingContext2D;
   private readonly material: THREE.MeshBasicMaterial;
   private texture: THREE.CanvasTexture;
-  private lastSignature = '';
+  private lastMode: LeaderboardPanelMode | null = null;
+  private lastEntries: readonly LeaderboardEntry[] | null = null;
+  private lastScore = Number.NaN;
+  private lastName = '';
+  private lastMessage = '';
 
   constructor(renderOrder: number) {
     const context = this.canvas.getContext('2d');
@@ -5717,18 +5879,21 @@ class LeaderboardPanelPlane {
   }
 
   setState(state: LeaderboardPanelState): void {
-    const signature = JSON.stringify({
-      mode: state.mode,
-      entries: state.entries,
-      score: state.score,
-      name: state.name,
-      message: state.message
-    });
-    if (signature === this.lastSignature) {
+    if (
+      state.mode === this.lastMode
+      && state.entries === this.lastEntries
+      && state.score === this.lastScore
+      && state.name === this.lastName
+      && state.message === this.lastMessage
+    ) {
       return;
     }
 
-    this.lastSignature = signature;
+    this.lastMode = state.mode;
+    this.lastEntries = state.entries;
+    this.lastScore = state.score;
+    this.lastName = state.name;
+    this.lastMessage = state.message;
     this.draw(state);
   }
 
@@ -6992,9 +7157,7 @@ function setSingleMaterialDanger(material: THREE.Material, intensity: number): v
   const clampedIntensity = clamp(intensity, 0, 1);
 
   if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshStandardMaterial) {
-    const color = new THREE.Color(materialBaseColor(material));
-    color.lerp(new THREE.Color(FATAL_MISS_DANGER_COLOR), 0.62 + clampedIntensity * 0.34);
-    material.color.copy(color);
+    material.color.setHex(lerpHexColor(materialBaseColor(material), FATAL_MISS_DANGER_COLOR, 0.62 + clampedIntensity * 0.34));
   }
 
   if (material instanceof THREE.MeshStandardMaterial) {
@@ -7038,9 +7201,19 @@ function materialBaseEmissiveIntensity(material: THREE.MeshStandardMaterial): nu
 }
 
 function greyscaleHex(hex: number): number {
-  const color = new THREE.Color(hex);
-  const level = Math.round(clamp(color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722, 0.18, 0.74) * 255);
+  const red = ((hex >> 16) & 0xff) / 255;
+  const green = ((hex >> 8) & 0xff) / 255;
+  const blue = (hex & 0xff) / 255;
+  const level = Math.round(clamp(red * 0.2126 + green * 0.7152 + blue * 0.0722, 0.18, 0.74) * 255);
   return (level << 16) | (level << 8) | level;
+}
+
+function lerpHexColor(from: number, to: number, amount: number): number {
+  const t = clamp(amount, 0, 1);
+  const red = Math.round(lerp((from >> 16) & 0xff, (to >> 16) & 0xff, t));
+  const green = Math.round(lerp((from >> 8) & 0xff, (to >> 8) & 0xff, t));
+  const blue = Math.round(lerp(from & 0xff, to & 0xff, t));
+  return (red << 16) | (green << 8) | blue;
 }
 
 function isTerminalPhase(phase: BreakoutoutoutRenderState['phase']): boolean {
