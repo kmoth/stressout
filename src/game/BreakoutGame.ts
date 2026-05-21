@@ -92,6 +92,9 @@ const DEFAULT_BALL_SPEED_MULTIPLIER_ACTIVE_GAME_CAP = 4;
 const BALL_SPEED_MULTIPLIER_TWEEN_DURATION = 2;
 const BALL_SPEED_MULTIPLIER_EPSILON = 0.0001;
 const FATAL_MISS_BALL_SPEED_MULTIPLIER = 0.035;
+const FATAL_MISS_PADDLE_SLOWDOWN_RATIO = 0.5;
+const FATAL_MISS_PADDLE_SPEED_MULTIPLIER = 1
+  - (1 - FATAL_MISS_BALL_SPEED_MULTIPLIER) * FATAL_MISS_PADDLE_SLOWDOWN_RATIO;
 const FATAL_MISS_BALL_SPEED_TWEEN_DURATION = 0.28;
 const FATAL_MISS_DANGER_COLOR = 0xff1f2d;
 const FATAL_MISS_DANGER_EMISSIVE = 0xff0000;
@@ -2882,6 +2885,7 @@ export class BreakoutGame {
   private syncBallSpeedForAll(): void {
     if (this.isGameFinished()) {
       for (const instance of this.instances) {
+        instance.setPaddleSpeedMultiplier(1);
         this.setBallSpeedMultiplierTarget(instance, 0, false);
       }
       return;
@@ -2890,6 +2894,7 @@ export class BreakoutGame {
     if (this.isFatalMissSequenceActive()) {
       for (const instance of this.instances) {
         if (instance === this.fatalMissInstance) {
+          instance.setPaddleSpeedMultiplier(FATAL_MISS_PADDLE_SPEED_MULTIPLIER);
           this.setBallSpeedMultiplierTarget(
             instance,
             FATAL_MISS_BALL_SPEED_MULTIPLIER,
@@ -2897,6 +2902,7 @@ export class BreakoutGame {
             FATAL_MISS_BALL_SPEED_TWEEN_DURATION
           );
         } else {
+          instance.setPaddleSpeedMultiplier(1);
           this.setBallSpeedMultiplierTarget(instance, 0, false);
         }
       }
@@ -2908,6 +2914,7 @@ export class BreakoutGame {
     const selectedInstance = this.selectedInstance;
     const backgroundBallSpeedMultiplier = this.ballSpeedMultiplierForActiveGames(this.activeGameCount);
     for (const instance of this.instances) {
+      instance.setPaddleSpeedMultiplier(1);
       const nextBallSpeedMultiplier = instance === selectedInstance ? 1 : backgroundBallSpeedMultiplier;
       this.setBallSpeedMultiplierTarget(instance, nextBallSpeedMultiplier, instance === selectedInstance);
     }

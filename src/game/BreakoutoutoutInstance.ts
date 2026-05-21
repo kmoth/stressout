@@ -214,6 +214,7 @@ export class BreakoutoutoutInstance {
   private autoPilotRemaining = 0;
   private pathProjectionRemaining = 0;
   private ballSpeedMultiplier = 1;
+  private paddleSpeedMultiplier = 1;
   private gameSpeed = 1;
   private lastBallDirectionX = 0;
   private lastBallDirectionY = 1;
@@ -423,6 +424,10 @@ export class BreakoutoutoutInstance {
     return this.ballSpeedMultiplier;
   }
 
+  setPaddleSpeedMultiplier(multiplier: number): void {
+    this.paddleSpeedMultiplier = clamp(multiplier, 0, 1);
+  }
+
   setGameSpeed(speed: number): void {
     const nextSpeed = clamp(speed, 0, 1);
     if (nextSpeed === this.gameSpeed) {
@@ -534,7 +539,7 @@ export class BreakoutoutoutInstance {
   }
 
   private updatePaddle(delta: number, input: BreakoutInput): void {
-    const maxStep = PADDLE_SPEED * this.gameSpeed * delta;
+    const maxStep = PADDLE_SPEED * this.gameSpeed * this.paddleSpeedMultiplier * delta;
 
     if (this.phase === 'playing' && this.isPaddleAutopilotActive) {
       const step = clamp(this.ball.x - this.paddleX, -maxStep, maxStep);
@@ -598,7 +603,8 @@ export class BreakoutoutoutInstance {
       && this.phase === 'playing'
       && this.lives === 1
       && this.ball.vy < -PHYSICS_EPSILON
-      && this.ball.y < FATAL_MISS_Y;
+      && this.ball.y < FATAL_MISS_Y
+      && !this.isCurrentPaddleProjectedToSaveBall();
 
     if (nextPending === this.fatalMissPending) {
       return;
@@ -609,6 +615,17 @@ export class BreakoutoutoutInstance {
       events.push({ type: 'fatal-miss' });
     }
     events.push({ type: 'state-changed' });
+  }
+
+  private isCurrentPaddleProjectedToSaveBall(): boolean {
+    const floorTime = (PLAYFIELD_BOTTOM - this.ball.y) / this.ball.vy;
+    if (!Number.isFinite(floorTime) || floorTime <= PHYSICS_EPSILON) {
+      return false;
+    }
+
+    this.paddleRect.x = this.paddleX;
+    return this.findPaddleHit(floorTime, this.candidateHit)
+      && this.candidateHit.touchedPaddle;
   }
 
   private resolveCollisions(collisions: PhysicsAdvanceResult, events: BreakoutoutoutEvent[]): void {
