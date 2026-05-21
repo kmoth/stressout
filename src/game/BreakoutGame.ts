@@ -58,7 +58,6 @@ const MAX_DT = 1 / 20;
 const PLANE_Z_GAP = 5;
 const DEFAULT_INITIAL_INSTANCE_COUNT = 1;
 const MAX_INITIAL_INSTANCE_COUNT = 24;
-const MAIN_MENU_DEMO_INSTANCE_COUNT = 6;
 const SPLIT_GAME_SPEED_TWEEN_DURATION = 0.55;
 const SPLIT_PLANE_TRAVEL_DURATION = 0.82;
 const SPLIT_PLANE_SPAWN_Z_OFFSET = 0.36;
@@ -191,15 +190,30 @@ const PLANE_STATUS_WORLD_HEIGHT = 1.35;
 const PLANE_STATUS_MAX_WIDTH = BOARD_WIDTH - 1.2;
 const PLANE_STATUS_Y = -1.05;
 const PLANE_STATUS_Z = 0.88;
+const END_GAME_STATUS_Y = 2.86;
+const END_GAME_PROMPT_WORLD_HEIGHT = 2.45;
+const END_GAME_PROMPT_MAX_WIDTH = 8.8;
+const END_GAME_PROMPT_Y = 0.62;
+const END_GAME_PROMPT_Z = 0.98;
+const PLANE_SUBMIT_WORLD_HEIGHT = 0.72;
+const PLANE_SUBMIT_MAX_WIDTH = 4.2;
+const PLANE_SUBMIT_Y = -1.28;
+const PLANE_SUBMIT_Z = 0.99;
 const PLANE_RESTART_WORLD_HEIGHT = 0.9;
 const PLANE_RESTART_MAX_WIDTH = 6.4;
-const PLANE_RESTART_Y = -2.95;
+const PLANE_RESTART_Y = -3.2;
 const PLANE_RESTART_Z = 0.9;
+const PLANE_LEADERBOARD_BUTTON_WORLD_HEIGHT = 0.78;
+const PLANE_LEADERBOARD_BUTTON_MAX_WIDTH = 7.2;
+const PLANE_LEADERBOARD_BUTTON_Y = -4.42;
+const PLANE_LEADERBOARD_BUTTON_Z = 0.91;
 const LEADERBOARD_NAME_MAX_LENGTH = 6;
-const LEADERBOARD_PANEL_WORLD_HEIGHT = 5.65;
-const LEADERBOARD_PANEL_MAX_WIDTH = 7.7;
-const LEADERBOARD_PANEL_Y = 2.28;
+const LEADERBOARD_PANEL_WORLD_HEIGHT = BOARD_HEIGHT;
+const LEADERBOARD_PANEL_MAX_WIDTH = BOARD_WIDTH;
+const LEADERBOARD_PANEL_Y = 0;
 const LEADERBOARD_PANEL_Z = 0.98;
+const LEADERBOARD_VIEW_RESTART_Y = -5.56;
+const LEADERBOARD_VIEW_BACK_Y = -6.68;
 const PLANE_CORNER_HUD_Z = 0.92;
 const PLANE_CORNER_HUD_GAP = 0.28;
 const PLANE_SCORE_WORLD_HEIGHT = 0.84;
@@ -208,6 +222,7 @@ const PLANE_HEART_WORLD_HEIGHT = 0.68;
 const PLANE_HEART_MAX_WIDTH = 7.6;
 const MAIN_MENU_RENDER_ORDER = 120;
 const MAIN_MENU_CAMERA_DISTANCE = 18.5;
+const MAIN_MENU_VERTICAL_SHIFT_Y = -BOARD_HEIGHT * 0.1;
 const MAIN_MENU_TITLE_WORLD_HEIGHT = 1.2;
 const MAIN_MENU_TITLE_MAX_WIDTH = 9.6;
 const MAIN_MENU_TITLE_Y = 1.52;
@@ -217,6 +232,11 @@ const MAIN_MENU_SUBTITLE_Y = 0.62;
 const MAIN_MENU_BUTTON_WORLD_HEIGHT = 1.02;
 const MAIN_MENU_BUTTON_MAX_WIDTH = 5.35;
 const MAIN_MENU_START_BUTTON_Y = -0.68;
+const MAIN_MENU_LEADERBOARD_BUTTON_Y = -1.78;
+const MAIN_MENU_LEADERBOARD_PANEL_WORLD_HEIGHT = 4;
+const MAIN_MENU_LEADERBOARD_PANEL_MAX_WIDTH = 5.6;
+const MAIN_MENU_LEADERBOARD_PANEL_X = 4.95;
+const MAIN_MENU_LEADERBOARD_PANEL_Y = -1.8;
 const MAIN_MENU_BUTTON_Z = 0.18;
 const PAUSE_MENU_RENDER_ORDER = MAIN_MENU_RENDER_ORDER + 10;
 const PAUSE_MENU_CAMERA_DISTANCE = MAIN_MENU_CAMERA_DISTANCE - 0.2;
@@ -459,15 +479,26 @@ type InstanceSelection = {
   trackOffset: number;
 };
 
-type MainMenuAction = 'start';
+type MainMenuAction = 'start' | 'leaderboard';
 
 type PauseMenuAction = 'resume';
 
 type MenuButtonAction = MainMenuAction | PauseMenuAction;
+type MenuButtonVariant = 'primary' | 'secondary';
+
+type MenuButtonPlaneOptions = {
+  userDataKey?: 'menuAction' | 'pauseMenuAction';
+  variant?: MenuButtonVariant;
+  cssWidth?: number;
+  cssHeight?: number;
+  fontSize?: number;
+};
 
 type TouchGestureIntent = 'pending' | 'paddle' | 'vertical-swipe';
 
 type SplitTutorialMode = 'keyboard' | 'touch';
+
+type EndGameAction = 'submit' | 'restart' | 'leaderboard';
 
 type LeaderboardLoadState = 'loading' | 'ready' | 'unavailable';
 
@@ -490,6 +521,14 @@ type LeaderboardPanelState = {
   message: string;
 };
 
+type EndGamePromptState = {
+  visible: boolean;
+  score: number;
+  name: string;
+  mode: LeaderboardSubmissionState | 'none';
+  message: string;
+};
+
 type InstanceView = {
   instance: BreakoutoutoutInstance;
   group: THREE.Group;
@@ -505,7 +544,10 @@ type InstanceView = {
   scoreText: HudTextPlane;
   hearts: HudHeartsPlane;
   statusText: HudTextPlane;
+  endGamePrompt: EndGamePromptPlane;
+  submitButtonText: HudTextPlane;
   restartButtonText: HudTextPlane;
+  leaderboardButtonText: HudTextPlane;
   leaderboardPanel: LeaderboardPanelPlane;
   renderState: BreakoutoutoutRenderState;
   glitchLevel: number;
@@ -587,6 +629,8 @@ export class BreakoutGame {
   private leaderboardEntries: LeaderboardEntry[] = [];
   private leaderboardSubmission: LeaderboardSubmission | null = null;
   private leaderboardRefreshId = 0;
+  private mainMenuLeaderboardVisible = false;
+  private endGameLeaderboardVisible = false;
   private gameSpeed = 1;
   private gameSpeedTween: GameSpeedTween | null = null;
   private splitSequenceActive = false;
@@ -681,6 +725,7 @@ export class BreakoutGame {
     this.createLighting();
     this.mainMenu = new MainMenuView();
     this.mainMenu.setVisible(!this.gameStarted);
+    this.updateMainMenuLeaderboard();
     this.pauseMenu = new PauseMenuView();
     this.pauseMenu.setVisible(false);
     this.scene.add(this.mainMenu.group);
@@ -825,28 +870,25 @@ export class BreakoutGame {
 
   private populateInitialInstances(): void {
     if (this.isMainMenuActive) {
-      this.populateInstances(MAIN_MENU_DEMO_INSTANCE_COUNT, this.createMainMenuDemoOptions(), true);
+      this.populateMainMenuDemo();
       return;
     }
 
     this.populateInstances(this.initialInstanceCount, this.instanceOptions);
   }
 
-  private populateInstances(
-    count: number,
-    options: BreakoutoutoutOptions,
-    launchImmediately = false
-  ): void {
+  private populateInstances(count: number, options: BreakoutoutoutOptions): void {
     for (let index = 0; index < count; index += 1) {
       const snapshot = this.projectorDebug ? this.createProjectorDebugSnapshot() : undefined;
       const instance = new BreakoutoutoutInstance(this.nextInstanceId, snapshot, options);
-      if (launchImmediately && !this.projectorDebug) {
-        instance.launchOrAdvance();
-      }
       this.instanceGlitchLevels.set(instance, 0);
       this.addInstance(instance);
       this.nextInstanceId += 1;
     }
+  }
+
+  private populateMainMenuDemo(): void {
+    this.populateInstances(DEFAULT_INITIAL_INSTANCE_COUNT, this.createMainMenuDemoOptions());
   }
 
   private createMainMenuDemoOptions(): BreakoutoutoutOptions {
@@ -898,7 +940,10 @@ export class BreakoutGame {
     const scoreText = this.createPlaneScoreText();
     const hearts = new HudHeartsPlane({ renderOrder: PLANE_HUD_RENDER_ORDER });
     const statusText = this.createPlaneStatusText();
+    const endGamePrompt = new EndGamePromptPlane(PLANE_HUD_RENDER_ORDER + 1);
+    const submitButtonText = this.createPlaneSubmitButtonText();
     const restartButtonText = this.createPlaneRestartButtonText();
+    const leaderboardButtonText = this.createPlaneLeaderboardButtonText();
     const leaderboardPanel = new LeaderboardPanelPlane(PLANE_HUD_RENDER_ORDER + 2);
     const bricks = new Map<string, THREE.Mesh>();
     const activeBrickIds = new Set<string>();
@@ -915,7 +960,10 @@ export class BreakoutGame {
       scoreText.mesh,
       hearts.mesh,
       statusText.mesh,
+      endGamePrompt.mesh,
+      submitButtonText.mesh,
       restartButtonText.mesh,
+      leaderboardButtonText.mesh,
       leaderboardPanel.mesh
     );
 
@@ -934,7 +982,10 @@ export class BreakoutGame {
       scoreText,
       hearts,
       statusText,
+      endGamePrompt,
+      submitButtonText,
       restartButtonText,
+      leaderboardButtonText,
       leaderboardPanel,
       renderState: state,
       glitchLevel: this.glitchLevelForInstance(instance),
@@ -977,6 +1028,23 @@ export class BreakoutGame {
     });
   }
 
+  private createPlaneSubmitButtonText(): HudTextPlane {
+    return new HudTextPlane({
+      fontSize: 30,
+      fill: '#08090d',
+      weight: 'bold',
+      paddingX: 36,
+      paddingY: 14,
+      minWidth: 190,
+      minHeight: 70,
+      background: 'rgba(167, 243, 208, 0.92)',
+      border: 'rgba(236, 253, 245, 0.96)',
+      borderWidth: 2,
+      radius: 6,
+      renderOrder: PLANE_HUD_RENDER_ORDER + 1
+    });
+  }
+
   private createPlaneRestartButtonText(): HudTextPlane {
     return new HudTextPlane({
       fontSize: 36,
@@ -988,6 +1056,23 @@ export class BreakoutGame {
       minHeight: 84,
       background: 'rgba(240, 201, 93, 0.92)',
       border: 'rgba(255, 243, 190, 0.96)',
+      borderWidth: 2,
+      radius: 6,
+      renderOrder: PLANE_HUD_RENDER_ORDER + 1
+    });
+  }
+
+  private createPlaneLeaderboardButtonText(): HudTextPlane {
+    return new HudTextPlane({
+      fontSize: 30,
+      fill: '#f8fafc',
+      weight: 'bold',
+      paddingX: 34,
+      paddingY: 15,
+      minWidth: 260,
+      minHeight: 76,
+      background: 'rgba(7, 10, 15, 0.88)',
+      border: 'rgba(167, 243, 208, 0.7)',
       borderWidth: 2,
       radius: 6,
       renderOrder: PLANE_HUD_RENDER_ORDER + 1
@@ -1139,6 +1224,18 @@ export class BreakoutGame {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    if (this.isMainMenuActive && this.mainMenuLeaderboardVisible && event.code === 'Escape') {
+      event.preventDefault();
+      this.setMainMenuLeaderboardVisible(false);
+      return;
+    }
+
+    if (this.endGameLeaderboardVisible && event.code === 'Escape') {
+      event.preventDefault();
+      this.endGameLeaderboardVisible = false;
+      return;
+    }
+
     if (this.isLeaderboardEntryActive()) {
       event.preventDefault();
       this.handleLeaderboardEntryKeyDown(event);
@@ -1270,7 +1367,7 @@ export class BreakoutGame {
     }
 
     if (this.isGameFinished()) {
-      if (this.isRestartButtonHit(event.clientX, event.clientY)) {
+      if (this.endGameActionAtPointer(event.clientX, event.clientY)) {
         event.preventDefault();
       }
       return;
@@ -1308,7 +1405,7 @@ export class BreakoutGame {
     }
 
     if (this.isGameFinished()) {
-      this.updateRestartButtonCursor(event.clientX, event.clientY);
+      this.updateEndGameCursor(event.clientX, event.clientY);
       return;
     }
 
@@ -1353,9 +1450,10 @@ export class BreakoutGame {
     }
 
     if (this.isGameFinished()) {
-      if (this.isRestartButtonHit(event.clientX, event.clientY)) {
+      const action = this.endGameActionAtPointer(event.clientX, event.clientY);
+      if (action) {
         event.preventDefault();
-        this.restartGame();
+        this.handleEndGameAction(action);
       }
       return;
     }
@@ -1401,7 +1499,14 @@ export class BreakoutGame {
   private handleMainMenuAction(action: MainMenuAction): void {
     if (action === 'start') {
       this.startGameFromMenu();
+      return;
     }
+
+    if (this.leaderboardLoadState !== 'ready') {
+      void this.refreshLeaderboard();
+    }
+
+    this.setMainMenuLeaderboardVisible(!this.mainMenuLeaderboardVisible);
   }
 
   private startGameFromMenu(): void {
@@ -1412,8 +1517,14 @@ export class BreakoutGame {
     this.gameStarted = true;
     this.setHoveredMenuAction(null);
     this.setPressedMenuAction(null);
+    this.setMainMenuLeaderboardVisible(false);
     this.mainMenu.setVisible(false);
     this.resetGame(this.initialInstanceCount, this.instanceOptions);
+  }
+
+  private setMainMenuLeaderboardVisible(visible: boolean): void {
+    this.mainMenuLeaderboardVisible = visible;
+    this.updateMainMenuLeaderboard();
   }
 
   private updateMainMenuCursor(clientX: number, clientY: number): void {
@@ -1507,17 +1618,55 @@ export class BreakoutGame {
     return true;
   }
 
-  private isRestartButtonHit(clientX: number, clientY: number): boolean {
+  private endGameActionAtPointer(clientX: number, clientY: number): EndGameAction | null {
     const view = this.selectedView;
-    if (!view || !view.restartButtonText.mesh.visible || !this.updatePointerRay(clientX, clientY)) {
-      return false;
+    if (!view || !this.updatePointerRay(clientX, clientY)) {
+      return null;
     }
 
-    return this.pointerRaycaster.intersectObject(view.restartButtonText.mesh, false).length > 0;
+    if (
+      view.submitButtonText.mesh.visible
+      && this.pointerRaycaster.intersectObject(view.submitButtonText.mesh, false).length > 0
+    ) {
+      return 'submit';
+    }
+
+    if (
+      view.restartButtonText.mesh.visible
+      && this.pointerRaycaster.intersectObject(view.restartButtonText.mesh, false).length > 0
+    ) {
+      return 'restart';
+    }
+
+    if (
+      view.leaderboardButtonText.mesh.visible
+      && this.pointerRaycaster.intersectObject(view.leaderboardButtonText.mesh, false).length > 0
+    ) {
+      return 'leaderboard';
+    }
+
+    return null;
   }
 
-  private updateRestartButtonCursor(clientX: number, clientY: number): void {
-    this.renderer.domElement.style.cursor = this.isRestartButtonHit(clientX, clientY) ? 'pointer' : '';
+  private updateEndGameCursor(clientX: number, clientY: number): void {
+    this.renderer.domElement.style.cursor = this.endGameActionAtPointer(clientX, clientY) ? 'pointer' : '';
+  }
+
+  private handleEndGameAction(action: EndGameAction): void {
+    if (action === 'submit') {
+      this.submitLeaderboardEntry();
+      return;
+    }
+
+    if (action === 'leaderboard') {
+      if (!this.endGameLeaderboardVisible && this.leaderboardLoadState !== 'ready') {
+        void this.refreshLeaderboard();
+      }
+      this.endGameLeaderboardVisible = !this.endGameLeaderboardVisible;
+      return;
+    }
+
+    this.restartGame();
   }
 
   private updateTouchGesture(eventTime: number): void {
@@ -1679,9 +1828,11 @@ export class BreakoutGame {
         this.accumulator -= FIXED_STEP;
       }
 
-      if (this.gameStarted) {
+      if (this.gameStarted || this.isMainMenuActive) {
         this.maybeSelectAutopilotPaddleThreat(time / 1000);
-      } else if (this.shouldRestartMainMenuDemo()) {
+      }
+
+      if (this.shouldRestartMainMenuDemo()) {
         this.restartMainMenuDemo();
       }
     }
@@ -1809,8 +1960,7 @@ export class BreakoutGame {
       return;
     }
 
-    this.resetGame(0, this.createMainMenuDemoOptions());
-    this.populateInstances(MAIN_MENU_DEMO_INSTANCE_COUNT, this.createMainMenuDemoOptions(), true);
+    this.resetGame(DEFAULT_INITIAL_INSTANCE_COUNT, this.createMainMenuDemoOptions());
     this.mainMenu.setVisible(true);
   }
 
@@ -1856,6 +2006,7 @@ export class BreakoutGame {
     this.hasNavigatedInstances = false;
     this.globalScore = 0;
     this.leaderboardSubmission = null;
+    this.endGameLeaderboardVisible = false;
     this.gameSpeed = 1;
     this.gameSpeedTween = null;
     this.splitSequenceActive = false;
@@ -2139,6 +2290,7 @@ export class BreakoutGame {
     }
 
     this.syncBallSpeedForAll();
+    this.prepareLeaderboardAfterGameFinished(this.globalScore);
   }
 
   private triggerAllGamesCleared(source: BreakoutoutoutInstance): void {
@@ -2151,7 +2303,7 @@ export class BreakoutGame {
     this.clearTouchInput();
     this.focusInstance(source);
     this.syncBallSpeedForAll();
-    this.prepareLeaderboardAfterAllGamesCleared(this.globalScore);
+    this.prepareLeaderboardAfterGameFinished(this.globalScore);
   }
 
   private areAllGamesCleared(): boolean {
@@ -2174,6 +2326,7 @@ export class BreakoutGame {
 
       this.leaderboardEntries = leaderboard.entries;
       this.leaderboardLoadState = 'ready';
+      this.updateMainMenuLeaderboard();
     } catch (error) {
       if (refreshId !== this.leaderboardRefreshId) {
         return;
@@ -2182,10 +2335,11 @@ export class BreakoutGame {
       console.warn('Leaderboard unavailable.', error);
       this.leaderboardEntries = [];
       this.leaderboardLoadState = 'unavailable';
+      this.updateMainMenuLeaderboard();
     }
   }
 
-  private prepareLeaderboardAfterAllGamesCleared(score: number): void {
+  private prepareLeaderboardAfterGameFinished(score: number): void {
     if (!this.gameStarted || !this.isLeaderboardEligibleMode() || score <= 0) {
       return;
     }
@@ -2208,7 +2362,7 @@ export class BreakoutGame {
       await this.refreshLeaderboard();
     }
 
-    if (!this.totalGameCleared || this.globalScore !== score || this.leaderboardLoadState !== 'ready') {
+    if (!this.isGameFinished() || this.globalScore !== score || this.leaderboardLoadState !== 'ready') {
       return;
     }
 
@@ -2301,28 +2455,55 @@ export class BreakoutGame {
 
   private isLeaderboardEntryActive(): boolean {
     const state = this.leaderboardSubmission?.state;
-    return state === 'entry' || state === 'error' || state === 'submitting';
+    return !this.endGameLeaderboardVisible
+      && (state === 'entry' || state === 'error' || state === 'submitting');
   }
 
-  private leaderboardPanelState(): LeaderboardPanelState {
+  private endGamePromptState(visible: boolean): EndGamePromptState {
     const submission = this.leaderboardSubmission;
-    if (submission) {
+    if (!visible || !submission) {
       return {
-        mode: submission.state,
-        entries: this.leaderboardEntries,
-        score: submission.score,
-        name: submission.name,
-        message: submission.message ?? ''
+        visible: false,
+        score: this.globalScore,
+        name: '',
+        mode: 'none',
+        message: ''
       };
     }
 
     return {
+      visible: true,
+      score: submission.score,
+      name: submission.name,
+      mode: submission.state,
+      message: submission.message ?? ''
+    };
+  }
+
+  private leaderboardListPanelState(): LeaderboardPanelState {
+    const submission = this.leaderboardSubmission;
+    return {
       mode: this.leaderboardLoadState === 'ready' ? 'view' : this.leaderboardLoadState,
       entries: this.leaderboardEntries,
-      score: this.globalScore,
+      score: submission?.score ?? this.globalScore,
       name: '',
       message: ''
     };
+  }
+
+  private mainMenuLeaderboardPanelState(): LeaderboardPanelState {
+    return {
+      mode: this.leaderboardLoadState === 'ready' ? 'view' : this.leaderboardLoadState,
+      entries: this.leaderboardEntries,
+      score: 0,
+      name: '',
+      message: ''
+    };
+  }
+
+  private updateMainMenuLeaderboard(): void {
+    this.mainMenu.setLeaderboardState(this.mainMenuLeaderboardPanelState());
+    this.mainMenu.setLeaderboardVisible(this.mainMenuLeaderboardVisible);
   }
 
   private volumeForInstance(instance: BreakoutoutoutInstance): number {
@@ -2972,12 +3153,16 @@ export class BreakoutGame {
 
   private updatePlaneStatusHud(view: InstanceView, state: BreakoutoutoutRenderState): void {
     const selected = this.gameStarted && this.isSelectedView(view);
-    const statusLabel = selected ? this.planeStatusLabel(state) : '';
-    view.statusText.setText(statusLabel, 360);
-    view.statusText.mesh.position.set(0, PLANE_STATUS_Y, PLANE_STATUS_Z);
     const showEndGameHud = selected && this.isEndGameHudVisible(state);
+    const showLeaderboard = showEndGameHud && this.endGameLeaderboardVisible;
+    const statusLabel = selected && !showLeaderboard ? this.planeStatusLabel(state) : '';
+    view.statusText.setText(statusLabel, 360);
+    view.statusText.mesh.position.set(0, showEndGameHud ? END_GAME_STATUS_Y : PLANE_STATUS_Y, PLANE_STATUS_Z);
+    this.updateEndGamePromptHud(view, showEndGameHud && !showLeaderboard);
+    this.updatePlaneSubmitButtonHud(view, showEndGameHud && !showLeaderboard);
     this.updatePlaneRestartButtonHud(view, showEndGameHud);
-    this.updateLeaderboardPanelHud(view, showEndGameHud);
+    this.updatePlaneLeaderboardButtonHud(view, showEndGameHud);
+    this.updateLeaderboardPanelHud(view, showLeaderboard);
 
     if (statusLabel.length === 0) {
       return;
@@ -2986,9 +3171,40 @@ export class BreakoutGame {
     this.scalePlaneHudText(view.statusText, PLANE_STATUS_WORLD_HEIGHT, PLANE_STATUS_MAX_WIDTH);
   }
 
+  private updateEndGamePromptHud(view: InstanceView, visible: boolean): void {
+    view.endGamePrompt.setState(this.endGamePromptState(visible));
+    view.endGamePrompt.mesh.visible = visible && view.endGamePrompt.hasContent;
+    view.endGamePrompt.mesh.position.set(0, END_GAME_PROMPT_Y, END_GAME_PROMPT_Z);
+
+    if (!view.endGamePrompt.mesh.visible) {
+      return;
+    }
+
+    this.scalePlaneHudPlane(view.endGamePrompt, END_GAME_PROMPT_WORLD_HEIGHT, END_GAME_PROMPT_MAX_WIDTH);
+  }
+
+  private updatePlaneSubmitButtonHud(view: InstanceView, visible: boolean): void {
+    const submission = this.leaderboardSubmission;
+    const showSubmit = visible
+      && Boolean(submission)
+      && (submission?.state === 'entry' || submission?.state === 'error' || submission?.state === 'submitting');
+    view.submitButtonText.setText(showSubmit ? submission?.state === 'submitting' ? 'SAVING' : 'SUBMIT' : '', 180);
+    view.submitButtonText.mesh.position.set(0, PLANE_SUBMIT_Y, PLANE_SUBMIT_Z);
+
+    if (!showSubmit) {
+      return;
+    }
+
+    this.scalePlaneHudText(view.submitButtonText, PLANE_SUBMIT_WORLD_HEIGHT, PLANE_SUBMIT_MAX_WIDTH);
+  }
+
   private updatePlaneRestartButtonHud(view: InstanceView, visible: boolean): void {
     view.restartButtonText.setText(visible ? 'RESTART' : '', 220);
-    view.restartButtonText.mesh.position.set(0, PLANE_RESTART_Y, PLANE_RESTART_Z);
+    view.restartButtonText.mesh.position.set(
+      0,
+      this.endGameLeaderboardVisible ? LEADERBOARD_VIEW_RESTART_Y : PLANE_RESTART_Y,
+      PLANE_RESTART_Z
+    );
 
     if (!visible) {
       return;
@@ -2997,8 +3213,27 @@ export class BreakoutGame {
     this.scalePlaneHudText(view.restartButtonText, PLANE_RESTART_WORLD_HEIGHT, PLANE_RESTART_MAX_WIDTH);
   }
 
+  private updatePlaneLeaderboardButtonHud(view: InstanceView, visible: boolean): void {
+    view.leaderboardButtonText.setText(visible ? this.endGameLeaderboardVisible ? 'BACK' : 'LEADERBOARD' : '', 260);
+    view.leaderboardButtonText.mesh.position.set(
+      0,
+      this.endGameLeaderboardVisible ? LEADERBOARD_VIEW_BACK_Y : PLANE_LEADERBOARD_BUTTON_Y,
+      PLANE_LEADERBOARD_BUTTON_Z
+    );
+
+    if (!visible) {
+      return;
+    }
+
+    this.scalePlaneHudText(
+      view.leaderboardButtonText,
+      PLANE_LEADERBOARD_BUTTON_WORLD_HEIGHT,
+      PLANE_LEADERBOARD_BUTTON_MAX_WIDTH
+    );
+  }
+
   private updateLeaderboardPanelHud(view: InstanceView, visible: boolean): void {
-    view.leaderboardPanel.setState(this.leaderboardPanelState());
+    view.leaderboardPanel.setState(this.leaderboardListPanelState());
     view.leaderboardPanel.mesh.visible = visible;
     view.leaderboardPanel.mesh.position.set(0, LEADERBOARD_PANEL_Y, LEADERBOARD_PANEL_Z);
 
@@ -3022,17 +3257,13 @@ export class BreakoutGame {
       return `READY ${Math.max(1, Math.ceil(state.readyRemaining))}s`;
     }
 
-    if (state.persistentAutoPilotActive) {
-      return 'AUTO';
-    }
-
     if (state.pathProjectionActive) {
       return state.pathProjectionRemaining > 0
         ? `PATH ${Math.ceil(state.pathProjectionRemaining)}s`
         : 'PATH';
     }
 
-    if (state.autoPilotActive) {
+    if (state.autoPilotActive && !state.persistentAutoPilotActive) {
       return state.autoPilotRemaining > 0
         ? `AUTO ${Math.ceil(state.autoPilotRemaining)}s`
         : 'AUTO';
@@ -3286,7 +3517,7 @@ export class BreakoutGame {
 
   private maybeSelectAutopilotPaddleThreat(time: number): void {
     if (
-      !this.autopilot
+      !this.isAutopilotPresentationActive
       || this.instances.length <= 1
       || this.splitSequenceActive
       || this.isGameFinished()
@@ -3665,7 +3896,16 @@ export class BreakoutGame {
       view.statusText.mesh.quaternion
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
+      view.endGamePrompt.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
+      view.submitButtonText.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
       view.restartButtonText.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
+      view.leaderboardButtonText.mesh.quaternion
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
       view.leaderboardPanel.mesh.quaternion
@@ -3714,6 +3954,10 @@ export class BreakoutGame {
 
   private get isMainMenuActive(): boolean {
     return !this.gameStarted && !this.projectorDebug;
+  }
+
+  private get isAutopilotPresentationActive(): boolean {
+    return this.autopilot || this.isMainMenuActive;
   }
 
   private isFatalMissSequenceActive(): boolean {
@@ -5289,6 +5533,143 @@ class HudHeartsPlane {
   }
 }
 
+class EndGamePromptPlane {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  readonly cssWidth = 680;
+  readonly cssHeight = 300;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private texture: THREE.CanvasTexture;
+  private lastSignature = '';
+
+  hasContent = false;
+
+  constructor(renderOrder: number) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create end game prompt canvas.');
+    }
+
+    this.context = context;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.material.userData.forceTransparent = true;
+
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = renderOrder;
+    this.mesh.visible = false;
+    this.resizeCanvas(
+      Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
+      Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
+    );
+    this.setState({
+      visible: false,
+      score: 0,
+      name: '',
+      mode: 'none',
+      message: ''
+    });
+  }
+
+  setState(state: EndGamePromptState): void {
+    const signature = JSON.stringify(state);
+    if (signature === this.lastSignature) {
+      return;
+    }
+
+    this.lastSignature = signature;
+    this.hasContent = state.visible && state.mode !== 'none';
+    this.draw(state);
+  }
+
+  private draw(state: EndGamePromptState): void {
+    const context = this.context;
+    context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    context.clearRect(0, 0, this.cssWidth, this.cssHeight);
+
+    if (!this.hasContent) {
+      this.texture.needsUpdate = true;
+      return;
+    }
+
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.shadowColor = 'rgba(45, 212, 191, 0.28)';
+    context.shadowBlur = 16;
+
+    const isError = state.mode === 'error';
+    const isSubmitted = state.mode === 'submitted';
+    context.font = `900 36px ${HUD_FONT_FAMILY}`;
+    context.fillStyle = isError ? '#fb7185' : '#f8fafc';
+    context.fillText(state.message || (isSubmitted ? 'SAVED' : 'NEW HIGH SCORE!'), this.cssWidth / 2, 48);
+
+    context.shadowBlur = 10;
+    context.font = `900 48px ${HUD_FONT_FAMILY}`;
+    context.fillStyle = '#f0c95d';
+    context.fillText(formatLeaderboardScore(state.score), this.cssWidth / 2, 108);
+    context.shadowBlur = 0;
+
+    this.drawNameBoxes(state.name, isSubmitted);
+    this.texture.needsUpdate = true;
+  }
+
+  private drawNameBoxes(name: string, submitted: boolean): void {
+    const boxWidth = 52;
+    const boxHeight = 54;
+    const gap = 12;
+    const totalWidth = LEADERBOARD_NAME_MAX_LENGTH * boxWidth + (LEADERBOARD_NAME_MAX_LENGTH - 1) * gap;
+    const startX = (this.cssWidth - totalWidth) / 2;
+    const y = 158;
+
+    for (let index = 0; index < LEADERBOARD_NAME_MAX_LENGTH; index += 1) {
+      const x = startX + index * (boxWidth + gap);
+      const character = name[index] ?? '';
+      roundedRectPath(this.context, x, y, boxWidth, boxHeight, 6);
+      this.context.fillStyle = character
+        ? submitted ? 'rgba(167, 243, 208, 0.92)' : 'rgba(240, 201, 93, 0.92)'
+        : 'rgba(244, 249, 248, 0.08)';
+      this.context.fill();
+      this.context.lineWidth = 2;
+      this.context.strokeStyle = character ? '#fff3be' : 'rgba(167, 243, 208, 0.46)';
+      this.context.stroke();
+
+      if (!character) {
+        continue;
+      }
+
+      this.context.textAlign = 'center';
+      this.context.textBaseline = 'middle';
+      this.context.font = `900 31px ${HUD_FONT_FAMILY}`;
+      this.context.fillStyle = '#08090d';
+      this.context.fillText(character, x + boxWidth / 2, y + boxHeight / 2 + 1);
+    }
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+}
+
 class LeaderboardPanelPlane {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   readonly cssWidth = 720;
@@ -5356,20 +5737,8 @@ class LeaderboardPanelPlane {
     context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
     context.clearRect(0, 0, this.cssWidth, this.cssHeight);
 
-    context.shadowColor = 'rgba(45, 212, 191, 0.28)';
-    context.shadowBlur = 24;
-    roundedRectPath(context, 10, 10, this.cssWidth - 20, this.cssHeight - 20, 10);
-    context.fillStyle = 'rgba(7, 10, 15, 0.9)';
-    context.fill();
-    context.shadowBlur = 0;
-    context.lineWidth = 3;
-    context.strokeStyle = 'rgba(167, 243, 208, 0.64)';
-    context.stroke();
-
-    context.lineWidth = 1;
-    context.strokeStyle = 'rgba(240, 201, 93, 0.24)';
-    roundedRectPath(context, 28, 28, this.cssWidth - 56, this.cssHeight - 56, 6);
-    context.stroke();
+    context.fillStyle = 'rgba(7, 10, 15, 0.72)';
+    context.fillRect(0, 0, this.cssWidth, this.cssHeight);
 
     this.drawHeader(state.score);
     this.drawEntries(state.entries);
@@ -5533,6 +5902,7 @@ class MainMenuView {
 
   private readonly cameraForward = new THREE.Vector3();
   private readonly title = new MainMenuTitlePlane(MAIN_MENU_RENDER_ORDER + 3);
+  private readonly leaderboardPanel = new LeaderboardPanelPlane(MAIN_MENU_RENDER_ORDER + 2);
   private readonly subtitle = new HudTextPlane({
     fontSize: 34,
     fill: '#a7f3d0',
@@ -5546,7 +5916,7 @@ class MainMenuView {
   private pressedAction: MainMenuAction | null = null;
 
   constructor() {
-    this.title.mesh.position.set(0, MAIN_MENU_TITLE_Y, MAIN_MENU_BUTTON_Z + 0.08);
+    this.title.mesh.position.set(0, MAIN_MENU_TITLE_Y + MAIN_MENU_VERTICAL_SHIFT_Y, MAIN_MENU_BUTTON_Z + 0.08);
     scaleMenuCanvasPlane(
       this.title.mesh,
       this.title.cssWidth,
@@ -5557,7 +5927,7 @@ class MainMenuView {
     this.group.add(this.title.mesh);
 
     this.subtitle.setText('multidimensional breakout', 520);
-    this.subtitle.mesh.position.set(0, MAIN_MENU_SUBTITLE_Y, MAIN_MENU_BUTTON_Z + 0.06);
+    this.subtitle.mesh.position.set(0, MAIN_MENU_SUBTITLE_Y + MAIN_MENU_VERTICAL_SHIFT_Y, MAIN_MENU_BUTTON_Z + 0.06);
     scaleMenuCanvasPlane(
       this.subtitle.mesh,
       this.subtitle.cssWidth,
@@ -5567,8 +5937,11 @@ class MainMenuView {
     );
     this.group.add(this.subtitle.mesh);
 
-    const startButton = new MenuButtonPlane('start', 'start game', MAIN_MENU_RENDER_ORDER + 4);
-    startButton.mesh.position.set(0, MAIN_MENU_START_BUTTON_Y, MAIN_MENU_BUTTON_Z + 0.1);
+    const startButton = new MenuButtonPlane('start', 'START', MAIN_MENU_RENDER_ORDER + 4, {
+      variant: 'primary',
+      fontSize: 44
+    });
+    startButton.mesh.position.set(0, MAIN_MENU_START_BUTTON_Y + MAIN_MENU_VERTICAL_SHIFT_Y, MAIN_MENU_BUTTON_Z + 0.1);
     scaleMenuCanvasPlane(
       startButton.mesh,
       startButton.cssWidth,
@@ -5578,8 +5951,40 @@ class MainMenuView {
     );
     this.buttons.set('start', startButton);
 
-    this.buttonMeshes = [startButton.mesh];
-    this.group.add(startButton.mesh);
+    const leaderboardButton = new MenuButtonPlane('leaderboard', 'LEADERBOARD', MAIN_MENU_RENDER_ORDER + 4, {
+      variant: 'secondary',
+      fontSize: 34
+    });
+    leaderboardButton.mesh.position.set(
+      0,
+      MAIN_MENU_LEADERBOARD_BUTTON_Y + MAIN_MENU_VERTICAL_SHIFT_Y,
+      MAIN_MENU_BUTTON_Z + 0.1
+    );
+    scaleMenuCanvasPlane(
+      leaderboardButton.mesh,
+      leaderboardButton.cssWidth,
+      leaderboardButton.cssHeight,
+      MAIN_MENU_BUTTON_WORLD_HEIGHT,
+      MAIN_MENU_BUTTON_MAX_WIDTH
+    );
+    this.buttons.set('leaderboard', leaderboardButton);
+
+    this.leaderboardPanel.mesh.position.set(
+      MAIN_MENU_LEADERBOARD_PANEL_X,
+      MAIN_MENU_LEADERBOARD_PANEL_Y + MAIN_MENU_VERTICAL_SHIFT_Y,
+      MAIN_MENU_BUTTON_Z + 0.04
+    );
+    scaleMenuCanvasPlane(
+      this.leaderboardPanel.mesh,
+      this.leaderboardPanel.cssWidth,
+      this.leaderboardPanel.cssHeight,
+      MAIN_MENU_LEADERBOARD_PANEL_WORLD_HEIGHT,
+      MAIN_MENU_LEADERBOARD_PANEL_MAX_WIDTH
+    );
+    this.leaderboardPanel.mesh.visible = false;
+
+    this.buttonMeshes = [startButton.mesh, leaderboardButton.mesh];
+    this.group.add(this.leaderboardPanel.mesh, startButton.mesh, leaderboardButton.mesh);
   }
 
   setVisible(visible: boolean): void {
@@ -5598,6 +6003,14 @@ class MainMenuView {
   setPressedAction(action: MainMenuAction | null): void {
     this.pressedAction = action;
     this.refreshButtonStates();
+  }
+
+  setLeaderboardVisible(visible: boolean): void {
+    this.leaderboardPanel.mesh.visible = visible;
+  }
+
+  setLeaderboardState(state: LeaderboardPanelState): void {
+    this.leaderboardPanel.setState(state);
   }
 
   update(time: number, camera: THREE.Camera, distance: number): void {
@@ -5662,7 +6075,9 @@ class PauseMenuView {
     );
     this.group.add(this.title.mesh);
 
-    const resumeButton = new MenuButtonPlane('resume', 'resume', PAUSE_MENU_RENDER_ORDER + 2, 'pauseMenuAction');
+    const resumeButton = new MenuButtonPlane('resume', 'resume', PAUSE_MENU_RENDER_ORDER + 2, {
+      userDataKey: 'pauseMenuAction'
+    });
     resumeButton.mesh.position.set(0, PAUSE_MENU_BUTTON_Y, PAUSE_MENU_Z + 0.06);
     scaleMenuCanvasPlane(
       resumeButton.mesh,
@@ -5753,10 +6168,8 @@ class MainMenuTitlePlane {
 
   private draw(): void {
     const segments = [
-      { text: 'Break', size: 96, fill: '#f8fafc' },
-      { text: 'out', size: 96, fill: '#f8fafc' },
-      { text: 'out', size: 82, fill: '#7dd3fc' },
-      { text: 'out', size: 70, fill: '#f0c95d' }
+      { text: 'STRESS', size: 96, fill: '#f8fafc' },
+      { text: 'out', size: 96, fill: '#f0c95d' }
     ] as const;
     const paddingX = 22;
     const paddingY = 18;
@@ -5896,13 +6309,15 @@ class PauseMenuPanelPlane {
 
 class MenuButtonPlane {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
-  readonly cssWidth = 430;
-  readonly cssHeight = 102;
+  readonly cssWidth: number;
+  readonly cssHeight: number;
 
   private readonly canvas = document.createElement('canvas');
   private readonly context: CanvasRenderingContext2D;
   private readonly material: THREE.MeshBasicMaterial;
   private readonly label: string;
+  private readonly variant: MenuButtonVariant;
+  private readonly fontSize: number;
   private texture: THREE.CanvasTexture;
   private hovered = false;
   private pressed = false;
@@ -5911,15 +6326,20 @@ class MenuButtonPlane {
     action: MenuButtonAction,
     label: string,
     renderOrder: number,
-    userDataKey: 'menuAction' | 'pauseMenuAction' = 'menuAction'
+    options: MenuButtonPlaneOptions = {}
   ) {
     const context = this.canvas.getContext('2d');
     if (!context) {
       throw new Error('Unable to create main menu button canvas.');
     }
 
+    const userDataKey = options.userDataKey ?? 'menuAction';
     this.context = context;
     this.label = label;
+    this.variant = options.variant ?? 'secondary';
+    this.fontSize = options.fontSize ?? 38;
+    this.cssWidth = options.cssWidth ?? 430;
+    this.cssHeight = options.cssHeight ?? 102;
     this.texture = createHudCanvasTexture(this.canvas);
     this.material = new THREE.MeshBasicMaterial({
       map: this.texture,
@@ -5953,22 +6373,33 @@ class MenuButtonPlane {
 
   private draw(): void {
     const radius = 8;
+    const primary = this.variant === 'primary';
     const borderWidth = this.hovered ? 3 : 2;
-    const fill = this.pressed
-      ? '#f0c95d'
-      : this.hovered
-        ? '#1f2937'
-        : 'rgba(8, 13, 18, 0.86)';
-    const border = this.pressed
-      ? '#fff3be'
-      : this.hovered
+    const fill = primary
+      ? this.pressed
+        ? '#d9a832'
+        : this.hovered
+          ? '#fff3be'
+          : 'rgba(240, 201, 93, 0.92)'
+      : this.pressed
         ? '#f0c95d'
-        : 'rgba(167, 243, 208, 0.66)';
-    const textFill = this.pressed ? '#08090d' : '#f8fafc';
+        : this.hovered
+          ? '#1f2937'
+          : 'rgba(8, 13, 18, 0.86)';
+    const border = primary
+      ? this.pressed
+        ? '#f8fafc'
+        : 'rgba(255, 243, 190, 0.96)'
+      : this.pressed
+        ? '#fff3be'
+        : this.hovered
+          ? '#f0c95d'
+          : 'rgba(167, 243, 208, 0.66)';
+    const textFill = primary || this.pressed ? '#08090d' : '#f8fafc';
 
     this.context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
     this.context.clearRect(0, 0, this.cssWidth, this.cssHeight);
-    this.context.shadowColor = this.hovered ? 'rgba(240, 201, 93, 0.35)' : 'rgba(45, 212, 191, 0.22)';
+    this.context.shadowColor = primary || this.hovered ? 'rgba(240, 201, 93, 0.35)' : 'rgba(45, 212, 191, 0.22)';
     this.context.shadowBlur = this.hovered ? 16 : 10;
     roundedRectPath(this.context, 3, 3, this.cssWidth - 6, this.cssHeight - 6, radius);
     this.context.fillStyle = fill;
@@ -5978,7 +6409,7 @@ class MenuButtonPlane {
     this.context.strokeStyle = border;
     this.context.stroke();
 
-    this.context.font = `800 38px ${HUD_FONT_FAMILY}`;
+    this.context.font = `800 ${this.fontSize}px ${HUD_FONT_FAMILY}`;
     this.context.fillStyle = textFill;
     this.context.textAlign = 'center';
     this.context.textBaseline = 'middle';
@@ -6284,7 +6715,7 @@ function isTouchTutorialDevice(): boolean {
 }
 
 function isMainMenuAction(value: unknown): value is MainMenuAction {
-  return value === 'start';
+  return value === 'start' || value === 'leaderboard';
 }
 
 function isPauseMenuAction(value: unknown): value is PauseMenuAction {
