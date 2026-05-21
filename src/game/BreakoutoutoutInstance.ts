@@ -44,7 +44,12 @@ const MIN_MOVING_BALL_SPEED = 0.0001;
 const MIN_BALL_VERTICAL_DIRECTION = 0.18;
 const MAX_BALL_SPEED_FACTOR = 1.25;
 const READY_DURATION = 5;
-const FATAL_MISS_Y = PADDLE_Y - PADDLE_HEIGHT / 2 - BALL_RADIUS;
+const FATAL_MISS_WARNING_LEAD = BALL_RADIUS * 3;
+const FATAL_MISS_Y = PADDLE_Y + PADDLE_HEIGHT / 2 + BALL_RADIUS + FATAL_MISS_WARNING_LEAD;
+const PADDLE_HITBOX_HORIZONTAL_GRACE = BALL_RADIUS * 0.6;
+const PADDLE_HITBOX_TOP_GRACE = BALL_RADIUS * 0.5;
+const PADDLE_HITBOX_BOTTOM_GRACE = BALL_RADIUS * 0.15;
+const PADDLE_OVERLAP_RECOVERY_DEPTH = BALL_RADIUS * 0.45;
 const PLAYFIELD_LEFT = -HALF_WIDTH + BALL_RADIUS;
 const PLAYFIELD_RIGHT = HALF_WIDTH - BALL_RADIUS;
 const PLAYFIELD_TOP = HALF_HEIGHT - BALL_RADIUS;
@@ -220,9 +225,9 @@ export class BreakoutoutoutInstance {
   private readonly candidateHit = createSweptBallHit();
   private readonly paddleRect: PhysicsRect = {
     x: 0,
-    y: PADDLE_Y,
-    width: PADDLE_WIDTH,
-    height: PADDLE_HEIGHT
+    y: PADDLE_Y + (PADDLE_HITBOX_TOP_GRACE - PADDLE_HITBOX_BOTTOM_GRACE) / 2,
+    width: PADDLE_WIDTH + PADDLE_HITBOX_HORIZONTAL_GRACE * 2,
+    height: PADDLE_HEIGHT + PADDLE_HITBOX_TOP_GRACE + PADDLE_HITBOX_BOTTOM_GRACE
   };
 
   constructor(id: number, snapshot?: BreakoutoutoutSnapshot, options: BreakoutoutoutOptions = {}) {
@@ -477,7 +482,7 @@ export class BreakoutoutoutInstance {
   }
 
   placePaddleAt(x: number): void {
-    if (!this.isActive() || this.fatalMissPending) {
+    if (!this.isActive()) {
       return;
     }
 
@@ -530,11 +535,6 @@ export class BreakoutoutoutInstance {
 
   private updatePaddle(delta: number, input: BreakoutInput): void {
     const maxStep = PADDLE_SPEED * this.gameSpeed * delta;
-
-    if (this.fatalMissPending) {
-      this.syncPaddleBody();
-      return;
-    }
 
     if (this.phase === 'playing' && this.isPaddleAutopilotActive) {
       const step = clamp(this.ball.x - this.paddleX, -maxStep, maxStep);
@@ -597,6 +597,7 @@ export class BreakoutoutoutInstance {
     const nextPending = !this.sandbox
       && this.phase === 'playing'
       && this.lives === 1
+      && this.ball.vy < -PHYSICS_EPSILON
       && this.ball.y < FATAL_MISS_Y;
 
     if (nextPending === this.fatalMissPending) {
@@ -741,7 +742,7 @@ export class BreakoutoutoutInstance {
     this.findNearestWallHit(maxTime, nearest);
 
     this.paddleRect.x = this.paddleX;
-    if (this.sweptRectHit(this.paddleRect, 'paddle', null, maxTime, this.candidateHit)) {
+    if (this.findPaddleHit(maxTime, this.candidateHit)) {
       mergeSweptBallHit(nearest, this.candidateHit);
     }
 
@@ -756,6 +757,14 @@ export class BreakoutoutoutInstance {
     }
 
     return hasSweptBallHit(nearest);
+  }
+
+  private findPaddleHit(maxTime: number, out: SweptBallHit): boolean {
+    if (this.sweptRectHit(this.paddleRect, 'paddle', null, maxTime, out)) {
+      return true;
+    }
+
+    return this.findPaddleOverlapRecoveryHit(out);
   }
 
   private findNearestWallHit(maxTime: number, nearest: SweptBallHit): void {
@@ -881,6 +890,29 @@ export class BreakoutoutoutInstance {
     out.normalX = normalX;
     out.normalY = normalY;
     addSweptBallTarget(out, target, brick);
+    return true;
+  }
+
+  private findPaddleOverlapRecoveryHit(out: SweptBallHit): boolean {
+    resetSweptBallHit(out);
+
+    if (this.ball.vy > PHYSICS_EPSILON) {
+      return false;
+    }
+
+    const minX = this.paddleRect.x - this.paddleRect.width / 2 - BALL_RADIUS;
+    const maxX = this.paddleRect.x + this.paddleRect.width / 2 + BALL_RADIUS;
+    const maxY = this.paddleRect.y + this.paddleRect.height / 2 + BALL_RADIUS;
+    const minY = PADDLE_Y + PADDLE_HEIGHT / 2 - BALL_RADIUS - PADDLE_OVERLAP_RECOVERY_DEPTH;
+
+    if (this.ball.x < minX || this.ball.x > maxX || this.ball.y < minY || this.ball.y > maxY) {
+      return false;
+    }
+
+    out.time = 0;
+    out.normalX = 0;
+    out.normalY = 1;
+    addSweptBallTarget(out, 'paddle', null);
     return true;
   }
 

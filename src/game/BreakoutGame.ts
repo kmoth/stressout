@@ -214,6 +214,7 @@ const LEADERBOARD_PANEL_Y = 0;
 const LEADERBOARD_PANEL_Z = 0.98;
 const LEADERBOARD_VIEW_RESTART_Y = -5.56;
 const LEADERBOARD_VIEW_BACK_Y = -6.68;
+const LEADERBOARD_VIEW_BUTTON_Z = LEADERBOARD_PANEL_Z + 0.12;
 const PLANE_CORNER_HUD_Z = 0.92;
 const PLANE_CORNER_HUD_GAP = 0.28;
 const PLANE_SCORE_WORLD_HEIGHT = 0.84;
@@ -1090,7 +1091,7 @@ export class BreakoutGame {
       border: 'rgba(255, 243, 190, 0.96)',
       borderWidth: 2,
       radius: 6,
-      renderOrder: PLANE_HUD_RENDER_ORDER + 1
+      renderOrder: PLANE_HUD_RENDER_ORDER + 3
     });
   }
 
@@ -1107,7 +1108,7 @@ export class BreakoutGame {
       border: 'rgba(167, 243, 208, 0.7)',
       borderWidth: 4,
       radius: 6,
-      renderOrder: PLANE_HUD_RENDER_ORDER + 1
+      renderOrder: PLANE_HUD_RENDER_ORDER + 3
     });
   }
 
@@ -1598,7 +1599,7 @@ export class BreakoutGame {
   }
 
   private updateTouchPaddle(clientX: number, clientY: number): void {
-    if (!this.gameStarted || this.autopilot || this.isGameFinished() || this.isFatalMissSequenceActive()) {
+    if (!this.gameStarted || this.autopilot || this.isGameFinished()) {
       return;
     }
 
@@ -1851,7 +1852,9 @@ export class BreakoutGame {
             continue;
           }
 
-          const allowPaddleInput = this.gameStarted && !this.isGameFinished() && !fatalSequenceInstance;
+          const allowPaddleInput = this.gameStarted
+            && !this.isGameFinished()
+            && (!fatalSequenceInstance || instance === fatalSequenceInstance);
           const input = allowPaddleInput && !this.autopilot && index === this.selectedIndex && instance.isActive()
             ? this.currentInput
             : IDLE_INPUT;
@@ -2308,6 +2311,8 @@ export class BreakoutGame {
       this.invalidateTrajectoryProjectionCacheForInstance(instance);
     }
 
+    this.clearFatalMissSequenceIfRecovered(instance);
+
     if (instance.getPhase() === 'game-over') {
       if (this.isFatalMissSequenceActive() && instance !== this.fatalMissInstance) {
         return;
@@ -2327,13 +2332,22 @@ export class BreakoutGame {
     }
   }
 
+  private clearFatalMissSequenceIfRecovered(instance: BreakoutoutoutInstance): void {
+    if (
+      this.fatalMissInstance === instance
+      && instance.getPhase() === 'playing'
+      && !instance.hasFatalMissPending()
+    ) {
+      this.fatalMissInstance = null;
+    }
+  }
+
   private startFatalMissSequence(instance: BreakoutoutoutInstance): void {
     if (this.isGameFinished() || this.fatalMissInstance === instance) {
       return;
     }
 
     this.fatalMissInstance = instance;
-    this.clearTouchInput();
     this.focusInstance(instance);
     this.syncBallSpeedForAll();
   }
@@ -3163,7 +3177,9 @@ export class BreakoutGame {
 
   private trajectoryProjectionInputForView(view: InstanceView): BreakoutInput {
     const fatalSequenceInstance = this.isFatalMissSequenceActive() ? this.fatalMissInstance : null;
-    const allowPaddleInput = this.gameStarted && !this.isGameFinished() && !fatalSequenceInstance;
+    const allowPaddleInput = this.gameStarted
+      && !this.isGameFinished()
+      && (!fatalSequenceInstance || view.instance === fatalSequenceInstance);
     return allowPaddleInput
       && !this.autopilot
       && this.isSelectedView(view)
@@ -3269,7 +3285,7 @@ export class BreakoutGame {
     view.restartButtonText.mesh.position.set(
       0,
       this.endGameLeaderboardVisible ? LEADERBOARD_VIEW_RESTART_Y : PLANE_RESTART_Y,
-      PLANE_RESTART_Z
+      this.endGameLeaderboardVisible ? LEADERBOARD_VIEW_BUTTON_Z : PLANE_RESTART_Z
     );
 
     if (!visible) {
@@ -3284,7 +3300,7 @@ export class BreakoutGame {
     view.leaderboardButtonText.mesh.position.set(
       0,
       this.endGameLeaderboardVisible ? LEADERBOARD_VIEW_BACK_Y : PLANE_LEADERBOARD_BUTTON_Y,
-      PLANE_LEADERBOARD_BUTTON_Z
+      this.endGameLeaderboardVisible ? LEADERBOARD_VIEW_BUTTON_Z : PLANE_LEADERBOARD_BUTTON_Z
     );
 
     if (!visible) {
