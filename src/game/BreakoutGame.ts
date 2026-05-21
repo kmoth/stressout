@@ -376,6 +376,25 @@ type PostProcessingUniforms = {
   affineDistortion: THREE.UniformNode<'float', number>;
 };
 
+type PostProcessingDebugState = {
+  cssWidth: number;
+  cssHeight: number;
+  canvasWidth: number;
+  canvasHeight: number;
+  devicePixelRatio: number;
+  rendererPixelRatio: number;
+  screenScale: number;
+  colorBleedScale: number;
+  rawPixelSize: number;
+  effectivePixelSize: number;
+  resolutionScale: number;
+  passWidth: number;
+  passHeight: number;
+  colorLevels: number;
+  rawColorBleeding: number;
+  effectiveColorBleeding: number;
+};
+
 type PlaneZTransition = {
   from: number;
   to: number;
@@ -702,6 +721,7 @@ export class BreakoutGame {
   private touchPaddleX: number | null = null;
   private postProcessingScreenScale = 1;
   private postProcessingColorBleedScale = 1;
+  private postProcessingRendererPixelRatio = 1;
 
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
     this.projectorDebug = options.projectorDebug ?? false;
@@ -728,7 +748,8 @@ export class BreakoutGame {
 
     this.renderer.domElement.className = 'three-layer';
     this.renderer.domElement.tabIndex = -1;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.postProcessingRendererPixelRatio = Math.min(window.devicePixelRatio, 2);
+    this.renderer.setPixelRatio(this.postProcessingRendererPixelRatio);
     this.renderer.setClearColor(0x07080b, 0);
     this.shell.appendChild(this.renderer.domElement);
     this.pauseButton = this.createPauseButton();
@@ -834,6 +855,36 @@ export class BreakoutGame {
     this.postProcessingUniforms.colorBleeding.value = settings.colorBleeding * this.postProcessingColorBleedScale;
     this.postProcessingUniforms.barrelCurvature.value = settings.barrelCurvature * screenScale;
     this.postProcessingUniforms.affineDistortion.value = settings.affineDistortion * screenScale;
+  }
+
+  private postProcessingDebugState(): PostProcessingDebugState {
+    const settings = this.postProcessingSettings;
+    const effectivePixelSize = Math.max(1, settings.pixelSize * this.postProcessingScreenScale);
+    const resolutionScale = 1 / effectivePixelSize;
+    const canvas = this.renderer.domElement;
+
+    return {
+      cssWidth: canvas.clientWidth,
+      cssHeight: canvas.clientHeight,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      devicePixelRatio: window.devicePixelRatio,
+      rendererPixelRatio: this.postProcessingRendererPixelRatio,
+      screenScale: this.postProcessingScreenScale,
+      colorBleedScale: this.postProcessingColorBleedScale,
+      rawPixelSize: settings.pixelSize,
+      effectivePixelSize,
+      resolutionScale,
+      passWidth: Math.max(1, Math.round(canvas.width * resolutionScale)),
+      passHeight: Math.max(1, Math.round(canvas.height * resolutionScale)),
+      colorLevels: settings.colorLevels,
+      rawColorBleeding: settings.colorBleeding,
+      effectiveColorBleeding: settings.colorBleeding * this.postProcessingColorBleedScale
+    };
+  }
+
+  private updatePostProcessingDebugDisplay(): void {
+    this.postProcessingPanel.setDebugState(this.postProcessingDebugState());
   }
 
   private exportPostProcessingSettings(): string {
@@ -1808,6 +1859,7 @@ export class BreakoutGame {
     this.camera.updateProjectionMatrix();
     this.updateCamera(1);
 
+    this.postProcessingRendererPixelRatio = pixelRatio;
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
 
@@ -1829,6 +1881,7 @@ export class BreakoutGame {
     if (this.paused) {
       this.accumulator = 0;
       this.pauseMenu.update(time / 1000, this.camera, PAUSE_MENU_CAMERA_DISTANCE);
+      this.updatePostProcessingDebugDisplay();
       this.renderPipeline.render();
       requestAnimationFrame(this.tick);
       return;
@@ -1878,6 +1931,7 @@ export class BreakoutGame {
     this.syncViews(time / 1000);
     this.updateCamera(delta);
     this.mainMenu.update(time / 1000, this.camera, MAIN_MENU_CAMERA_DISTANCE);
+    this.updatePostProcessingDebugDisplay();
     this.updatePlaneHudBillboards();
     this.updateSplitTutorialBillboard();
     this.renderPipeline.render();
@@ -5260,6 +5314,7 @@ class PostProcessingPanel {
 
   private readonly body: HTMLDivElement;
   private readonly toggleButton: HTMLButtonElement;
+  private readonly debugOutput: HTMLPreElement;
   private readonly outputWrap: HTMLDivElement;
   private readonly output: HTMLTextAreaElement;
   private readonly status: HTMLSpanElement;
@@ -5284,7 +5339,7 @@ class PostProcessingPanel {
     this.toggleButton.textContent = 'Post FX';
     this.toggleButton.setAttribute('aria-expanded', 'false');
     this.toggleButton.addEventListener('click', () => this.setExpanded(!this.expanded));
-    this.toggleButton.setAttribute('hidden', 'true');
+    this.toggleButton.hidden = false;
 
     this.body = document.createElement('div');
     this.body.className = 'post-processing-panel__body';
@@ -5317,6 +5372,12 @@ class PostProcessingPanel {
       form.append(this.createControl(control, options.settings[control.key]));
     }
     this.body.append(form);
+
+    this.debugOutput = document.createElement('pre');
+    this.debugOutput.className = 'post-processing-panel__debug';
+    this.debugOutput.setAttribute('aria-label', 'Effective post processing metrics');
+    this.debugOutput.textContent = 'Post FX metrics pending';
+    this.body.append(this.debugOutput);
 
     this.outputWrap = document.createElement('div');
     this.outputWrap.className = 'post-processing-panel__output';
@@ -5353,6 +5414,22 @@ class PostProcessingPanel {
     elements.numeric.value = formattedValue;
     elements.value.textContent = formattedValue;
     this.refreshExportIfVisible();
+  }
+
+  setDebugState(state: PostProcessingDebugState): void {
+    this.debugOutput.textContent = [
+      `CSS: ${state.cssWidth} x ${state.cssHeight}`,
+      `Canvas: ${state.canvasWidth} x ${state.canvasHeight}`,
+      `Device DPR: ${formatDebugMetric(state.devicePixelRatio)}`,
+      `Renderer DPR: ${formatDebugMetric(state.rendererPixelRatio)}`,
+      `Screen scale: ${formatDebugMetric(state.screenScale)}`,
+      `Pixel size: ${formatDebugMetric(state.rawPixelSize)} -> ${formatDebugMetric(state.effectivePixelSize)}`,
+      `Resolution scale: ${formatDebugMetric(state.resolutionScale)}`,
+      `Pass approx: ${state.passWidth} x ${state.passHeight}`,
+      `Color levels: ${state.colorLevels}`,
+      `Color bleed: ${formatDebugMetric(state.rawColorBleeding)} -> ${formatDebugMetric(state.effectiveColorBleeding)}`,
+      `Bleed scale: ${formatDebugMetric(state.colorBleedScale)}`
+    ].join('\n');
   }
 
   private createControl(control: PostProcessingControlDefinition, value: number): HTMLLabelElement {
@@ -7051,6 +7128,26 @@ function formatControlValue(value: number, decimals: number): string {
   }
 
   return value.toFixed(decimals);
+}
+
+function formatDebugMetric(value: number): string {
+  if (!Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (Math.abs(value) >= 100) {
+    return value.toFixed(0);
+  }
+
+  if (Math.abs(value) >= 10) {
+    return value.toFixed(2);
+  }
+
+  if (Math.abs(value) >= 0.01) {
+    return value.toFixed(3);
+  }
+
+  return value.toPrecision(3);
 }
 
 function vhsGlitchIntensityForLevel(level: number): number {

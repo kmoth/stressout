@@ -177,6 +177,18 @@ textarea {
   font-weight: 750;
 }
 
+.post-processing-panel__debug {
+  margin: 0.8rem 0 0;
+  padding: 0.65rem 0.7rem;
+  border: 1px solid rgba(167, 243, 208, 0.18);
+  border-radius: 6px;
+  color: rgba(244, 249, 248, 0.82);
+  background: rgba(3, 6, 10, 0.62);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .post-processing-panel button:hover,
 .post-processing-panel button:focus-visible {
   border-color: rgba(240, 201, 93, 0.7);
