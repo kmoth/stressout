@@ -281,17 +281,29 @@ const IDLE_INPUT: BreakoutInput = { left: false, right: false };
 //   barrelCurvature: 0.02,
 //   affineDistortion: 0
 // };
+// const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
+//   pixelSize: 3,
+//   colorLevels: 32,
+//   scanlineStrength: 0.6,
+//   scanlineDensity: 0.9,
+//   scanlineSpeed: -0.85,
+//   vignetteStrength: 0.2,
+//   vignetteSmoothness: 0.35,
+//   colorBleeding: 0.0016,
+//   barrelCurvature: 0.036,
+//   affineDistortion: 0.28
+// };
 const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
-  pixelSize: 3,
+  pixelSize: 1,
   colorLevels: 32,
-  scanlineStrength: 0.6,
-  scanlineDensity: 0.9,
-  scanlineSpeed: -0.85,
-  vignetteStrength: 0.2,
-  vignetteSmoothness: 0.35,
-  colorBleeding: 0.0016,
+  scanlineStrength: 0.35,
+  scanlineDensity: 0.1,
+  scanlineSpeed: -0.15,
+  vignetteStrength: 0,
+  vignetteSmoothness: 0.1,
+  colorBleeding: 0.00015,
   barrelCurvature: 0.036,
-  affineDistortion: 0.28
+  affineDistortion: 0.92
 };
 const POST_PROCESSING_REFERENCE_SHORT_SIDE = 720;
 const POST_PROCESSING_REFERENCE_WIDTH = 1280;
