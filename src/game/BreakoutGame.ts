@@ -1190,30 +1190,44 @@ export class BreakoutGame {
   }
 
   private createWalls(group: THREE.Group, splitGlowMeshes: SplitGlowMesh[]): THREE.Mesh[] {
-    const wallMaterial = makeFadeableMaterial(new THREE.MeshBasicMaterial({
-      color: 0x4d8f99
-    }));
-    const wallMeshes: THREE.Mesh[] = [];
-    const walls = [
-      { x: -HALF_WIDTH - WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
-      { x: HALF_WIDTH + WALL_THICKNESS / 2, y: 0, width: WALL_THICKNESS, height: BOARD_HEIGHT + 0.6 },
-      { x: 0, y: HALF_HEIGHT + WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS },
-      { x: 0, y: -HALF_HEIGHT - WALL_THICKNESS / 2, width: BOARD_WIDTH + WALL_THICKNESS * 2, height: WALL_THICKNESS }
-    ];
+    const wallMesh = new THREE.Mesh(
+      this.createWallFrameGeometry(),
+      makeFadeableMaterial(new THREE.MeshBasicMaterial({
+        color: 0x4d8f99
+      }))
+    );
+    wallMesh.position.set(0, 0, -0.04);
+    setVhsBasePosition(wallMesh);
+    splitGlowMeshes.push(this.attachSplitGlow(wallMesh, 0x8ce9df, { baseScale: 1.02, pulseScale: 0.08 }));
+    group.add(wallMesh);
 
-    for (const wall of walls) {
-      const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(wall.width, wall.height, RENDER_MESH_DEPTHS.playfield),
-        wallMaterial.clone()
-      );
-      mesh.position.set(wall.x, wall.y, -0.04);
-      setVhsBasePosition(mesh);
-      splitGlowMeshes.push(this.attachSplitGlow(mesh, 0x8ce9df, { baseScale: 1.02, pulseScale: 0.08 }));
-      wallMeshes.push(mesh);
-      group.add(mesh);
-    }
+    return [wallMesh];
+  }
 
-    return wallMeshes;
+  private createWallFrameGeometry(): THREE.BufferGeometry {
+    const outerHalfWidth = HALF_WIDTH + WALL_THICKNESS;
+    const outerHalfHeight = HALF_HEIGHT + WALL_THICKNESS;
+    const shape = new THREE.Shape();
+    shape.moveTo(-outerHalfWidth, -outerHalfHeight);
+    shape.lineTo(outerHalfWidth, -outerHalfHeight);
+    shape.lineTo(outerHalfWidth, outerHalfHeight);
+    shape.lineTo(-outerHalfWidth, outerHalfHeight);
+    shape.lineTo(-outerHalfWidth, -outerHalfHeight);
+
+    const playfieldHole = new THREE.Path();
+    playfieldHole.moveTo(-HALF_WIDTH, -HALF_HEIGHT);
+    playfieldHole.lineTo(-HALF_WIDTH, HALF_HEIGHT);
+    playfieldHole.lineTo(HALF_WIDTH, HALF_HEIGHT);
+    playfieldHole.lineTo(HALF_WIDTH, -HALF_HEIGHT);
+    playfieldHole.lineTo(-HALF_WIDTH, -HALF_HEIGHT);
+    shape.holes.push(playfieldHole);
+
+    const geometry = new THREE.ExtrudeGeometry(shape, {
+      depth: RENDER_MESH_DEPTHS.playfield,
+      bevelEnabled: false
+    });
+    geometry.translate(0, 0, -RENDER_MESH_DEPTHS.playfield / 2);
+    return geometry;
   }
 
   private createPaddleMesh(): THREE.Mesh {
