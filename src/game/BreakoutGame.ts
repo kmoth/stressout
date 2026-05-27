@@ -269,36 +269,12 @@ const RENDER_MESH_DEPTHS = {
   boardMarker: PLAYFIELD_MESH_DEPTH * (0.04 / PLAYFIELD_MESH_DEPTH_BASELINE)
 } as const;
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
-// const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
-//   pixelSize: 3,
-//   colorLevels: 7,
-//   scanlineStrength: 0.16,
-//   scanlineDensity: 1,
-//   scanlineSpeed: 0,
-//   vignetteStrength: 0.36,
-//   vignetteSmoothness: 0.48,
-//   colorBleeding: 0.00115,
-//   barrelCurvature: 0.02,
-//   affineDistortion: 0
-// };
-// const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
-//   pixelSize: 3,
-//   colorLevels: 32,
-//   scanlineStrength: 0.6,
-//   scanlineDensity: 0.9,
-//   scanlineSpeed: -0.85,
-//   vignetteStrength: 0.2,
-//   vignetteSmoothness: 0.35,
-//   colorBleeding: 0.0016,
-//   barrelCurvature: 0.036,
-//   affineDistortion: 0.28
-// };
 const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
-  pixelSize: 1,
+  pixelSize: 3,
   colorLevels: 32,
-  scanlineStrength: 0.35,
-  scanlineDensity: 0.1,
-  scanlineSpeed: -0.15,
+  scanlineStrength: 0.38,
+  scanlineDensity: 0.5,
+  scanlineSpeed: -0.025,
   vignetteStrength: 0,
   vignetteSmoothness: 0.1,
   colorBleeding: 0.00015,
