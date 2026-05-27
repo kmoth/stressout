@@ -136,7 +136,14 @@ const PADDLE_COLOR = 0xe8f8f6;
 const PADDLE_EMISSIVE = 0x1fbfb1;
 const PADDLE_AUTOPILOT_COLOR = 0xeafffb;
 const PADDLE_AUTOPILOT_EMISSIVE = 0x34d399;
+const PADDLE_AUTOPILOT_FLASH_COLOR = 0xffffff;
+const PADDLE_AUTOPILOT_FLASH_EMISSIVE = 0xb6fff3;
 const PADDLE_BASE_EMISSIVE_INTENSITY = 0.28;
+const PADDLE_AUTOPILOT_PULSE_SPEED = 22;
+const PADDLE_AUTOPILOT_EMISSIVE_MIN = 0.18;
+const PADDLE_AUTOPILOT_EMISSIVE_MAX = 3.2;
+const PADDLE_AUTOPILOT_SCALE_Y = 0.34;
+const PADDLE_AUTOPILOT_SCALE_Z = 0.18;
 const TRAJECTORY_PROJECTION_COLOR = 0x7dd3fc;
 const TRAJECTORY_PROJECTION_OPACITY = 0.86;
 const TRAJECTORY_PROJECTION_DOT_RADIUS = 0.058;
@@ -222,6 +229,8 @@ const PLANE_CORNER_HUD_Z = 0.92;
 const PLANE_CORNER_HUD_GAP = 0.28;
 const PLANE_SCORE_WORLD_HEIGHT = 0.84;
 const PLANE_SCORE_MAX_WIDTH = 9.6;
+const PLANE_SCORE_TWEEN_DURATION = 0.34;
+const PLANE_SCORE_TWEEN_EPSILON = 0.01;
 const PLANE_HEART_WORLD_HEIGHT = 0.68;
 const PLANE_HEART_MAX_WIDTH = 7.6;
 const MAIN_MENU_RENDER_ORDER = 120;
@@ -421,6 +430,19 @@ type InstanceOpacityTween = {
   duration: number;
 };
 
+type ScoreDisplayState = {
+  displayed: number;
+  target: number;
+  tween?: ScoreDisplayTween;
+};
+
+type ScoreDisplayTween = {
+  from: number;
+  to: number;
+  elapsed: number;
+  duration: number;
+};
+
 type PendingSplit = {
   source: BreakoutoutoutInstance;
   snapshot: BreakoutoutoutSnapshot;
@@ -561,6 +583,7 @@ type InstanceView = {
   leaderboardButtonText: HudTextPlane;
   leaderboardPanel: LeaderboardPanelPlane;
   renderState: BreakoutoutoutRenderState;
+  scoreDisplay: ScoreDisplayState;
   glitchLevel: number;
   trajectoryProjectionCache: TrajectoryProjectionCache | null;
   appliedOpacity: number;
@@ -1007,6 +1030,7 @@ export class BreakoutGame {
 
   private createInstanceView(instance: BreakoutoutoutInstance, trackIndex: number): InstanceView {
     const state = instance.getRenderState(createEmptyRenderState());
+    state.score = this.projectorDebug ? 0 : this.globalScore;
     const group = new THREE.Group();
     const paddleMesh = this.createPaddleMesh();
     const ballMesh = this.createBallMesh();
@@ -1063,6 +1087,7 @@ export class BreakoutGame {
       leaderboardButtonText,
       leaderboardPanel,
       renderState: state,
+      scoreDisplay: createScoreDisplayState(state.score),
       glitchLevel: this.glitchLevelForInstance(instance),
       trajectoryProjectionCache: null,
       appliedOpacity: Number.NaN,
@@ -1072,7 +1097,7 @@ export class BreakoutGame {
       fatalGreyscaleApplied: false
     };
     group.position.set(0, 0, this.targetPlaneZForTrack(trackIndex));
-    this.syncInstanceView(view, state, 0);
+    this.syncInstanceView(view, state, 0, 0);
     return view;
   }
 
@@ -1930,7 +1955,7 @@ export class BreakoutGame {
       }
     }
 
-    this.syncViews(time / 1000);
+    this.syncViews(time / 1000, delta);
     this.updateCamera(delta);
     this.mainMenu.update(time / 1000, this.camera, MAIN_MENU_CAMERA_DISTANCE);
     this.updatePostProcessingDebugDisplay();
@@ -3038,12 +3063,12 @@ export class BreakoutGame {
     return Math.max(1, activeCount);
   }
 
-  private syncViews(time: number): void {
+  private syncViews(time: number, delta: number): void {
     for (const view of this.views) {
       const state = this.projectorDebug
         ? this.createProjectorDebugRenderState(view.instance, view.renderState)
         : this.renderStateForInstance(view.instance, view.renderState);
-      this.syncInstanceView(view, state, time);
+      this.syncInstanceView(view, state, time, delta);
     }
   }
 
@@ -3062,7 +3087,7 @@ export class BreakoutGame {
     return state;
   }
 
-  private syncInstanceView(view: InstanceView, state: BreakoutoutoutRenderState, time: number): void {
+  private syncInstanceView(view: InstanceView, state: BreakoutoutoutRenderState, time: number, delta: number): void {
     const terminal = isTerminalPhase(state.phase);
     view.glitchLevel = this.glitchLevelForInstance(view.instance);
 
@@ -3083,7 +3108,7 @@ export class BreakoutGame {
       view.glitchLevel
     );
     this.applyMeshOpacity(view, view.trajectoryProjection.mesh);
-    this.updatePlaneCornerHud(view, state);
+    this.updatePlaneCornerHud(view, state, delta);
     this.updatePlaneStatusHud(view, state);
 
     view.activeBrickIds.clear();
@@ -3271,13 +3296,14 @@ export class BreakoutGame {
     disposeObject(mesh);
   }
 
-  private updatePlaneCornerHud(view: InstanceView, state: BreakoutoutoutRenderState): void {
+  private updatePlaneCornerHud(view: InstanceView, state: BreakoutoutoutRenderState, delta: number): void {
     const topEdge = HALF_HEIGHT + WALL_THICKNESS;
     const leftEdge = -HALF_WIDTH - WALL_THICKNESS;
     const rightEdge = HALF_WIDTH + WALL_THICKNESS;
     const visible = this.gameStarted;
+    const displayedScore = this.updateScoreDisplay(view, state.score, delta);
 
-    view.scoreText.setText(state.score.toString().padStart(5, '0'));
+    view.scoreText.setText(formatHudScore(displayedScore));
     view.scoreText.mesh.visible = visible;
     this.scalePlaneHudText(view.scoreText, PLANE_SCORE_WORLD_HEIGHT, PLANE_SCORE_MAX_WIDTH);
     view.scoreText.mesh.position.set(
@@ -3294,6 +3320,42 @@ export class BreakoutGame {
       topEdge + PLANE_CORNER_HUD_GAP + view.hearts.mesh.scale.y / 2,
       PLANE_CORNER_HUD_Z
     );
+  }
+
+  private updateScoreDisplay(view: InstanceView, score: number, delta: number): number {
+    const display = view.scoreDisplay;
+    const target = normalizeScoreDisplayValue(score);
+
+    if (display.target !== target) {
+      display.target = target;
+      if (Math.abs(display.displayed - target) <= PLANE_SCORE_TWEEN_EPSILON) {
+        display.displayed = target;
+        display.tween = undefined;
+      } else {
+        display.tween = {
+          from: display.displayed,
+          to: target,
+          elapsed: 0,
+          duration: PLANE_SCORE_TWEEN_DURATION
+        };
+      }
+    }
+
+    const tween = display.tween;
+    if (!tween) {
+      return display.displayed;
+    }
+
+    tween.elapsed += Math.max(delta, 0);
+    const progress = clamp(tween.elapsed / Math.max(tween.duration, 0.001), 0, 1);
+    display.displayed = lerp(tween.from, tween.to, easeOutCubic(progress));
+
+    if (progress >= 1) {
+      display.displayed = tween.to;
+      display.tween = undefined;
+    }
+
+    return display.displayed;
   }
 
   private updatePlaneStatusHud(view: InstanceView, state: BreakoutoutoutRenderState): void {
@@ -3530,11 +3592,20 @@ export class BreakoutGame {
       return;
     }
 
-    const pulse = (Math.sin(time * 14) + 1) / 2;
-    mesh.material.color.setHex(PADDLE_AUTOPILOT_COLOR);
-    mesh.material.emissive.setHex(PADDLE_AUTOPILOT_EMISSIVE);
-    mesh.material.emissiveIntensity = 0.42 + pulse * 1.2;
-    mesh.scale.set(1, 1 + pulse * 0.2, 1 + pulse * 0.1);
+    const pulse = (Math.sin(time * PADDLE_AUTOPILOT_PULSE_SPEED) + 1) / 2;
+    const flash = pulse ** 2.4;
+    mesh.material.color.setHex(lerpHexColor(PADDLE_AUTOPILOT_COLOR, PADDLE_AUTOPILOT_FLASH_COLOR, flash));
+    mesh.material.emissive.setHex(lerpHexColor(PADDLE_AUTOPILOT_EMISSIVE, PADDLE_AUTOPILOT_FLASH_EMISSIVE, flash));
+    mesh.material.emissiveIntensity = lerp(
+      PADDLE_AUTOPILOT_EMISSIVE_MIN,
+      PADDLE_AUTOPILOT_EMISSIVE_MAX,
+      flash
+    );
+    mesh.scale.set(
+      1,
+      1 + flash * PADDLE_AUTOPILOT_SCALE_Y,
+      1 + flash * PADDLE_AUTOPILOT_SCALE_Z
+    );
   }
 
   private reconcilePlaneViews(): void {
@@ -7409,6 +7480,22 @@ function clamp(value: number, min: number, max: number): number {
 
 function positiveModulo(value: number, divisor: number): number {
   return ((value % divisor) + divisor) % divisor;
+}
+
+function createScoreDisplayState(score: number): ScoreDisplayState {
+  const normalizedScore = normalizeScoreDisplayValue(score);
+  return {
+    displayed: normalizedScore,
+    target: normalizedScore
+  };
+}
+
+function normalizeScoreDisplayValue(score: number): number {
+  return Math.max(0, Math.floor(Number.isFinite(score) ? score : 0));
+}
+
+function formatHudScore(score: number): string {
+  return Math.max(0, Math.round(score)).toString().padStart(5, '0');
 }
 
 function normalizeInitialInstanceCount(count: number | undefined): number {
