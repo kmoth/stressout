@@ -125,6 +125,9 @@ const TOUCH_SWIPE_FAST_DISTANCE = 36;
 const TOUCH_SWIPE_SLOW_DISTANCE = 72;
 const TOUCH_SWIPE_FAST_VELOCITY = 0.9;
 const TOUCH_SWIPE_SLOW_VELOCITY = 0.25;
+const TOUCH_VERTICAL_SWIPE_ENABLED = false;
+const LANDSCAPE_PORTRAIT_LOCK_MEDIA_QUERY = '(orientation: landscape) and (max-height: 540px), '
+  + '(orientation: landscape) and (hover: none) and (pointer: coarse)';
 const SELECTED_OPACITY = 1;
 const SLOT_A_OPACITY = 0.08;
 const BACKGROUND_OPACITY = 0.15;
@@ -262,6 +265,14 @@ const PAUSE_MENU_BUTTON_WORLD_HEIGHT = 0.86;
 const PAUSE_MENU_BUTTON_MAX_WIDTH = 4.5;
 const PAUSE_MENU_BUTTON_Y = -0.58;
 const PAUSE_MENU_Z = MAIN_MENU_BUTTON_Z + 0.22;
+const PLANE_SWITCH_CONTROLS_RENDER_ORDER = MAIN_MENU_RENDER_ORDER + 5;
+const PLANE_SWITCH_CONTROLS_DISTANCE = 12;
+const PLANE_SWITCH_CONTROLS_BOTTOM_MARGIN = 0.46;
+const PLANE_SWITCH_CONTROLS_BOTTOM_MARGIN_RATIO = 0.045;
+const PLANE_SWITCH_BUTTON_WORLD_HEIGHT = 1.04;
+const PLANE_SWITCH_BUTTON_MAX_WIDTH = 1.04;
+const PLANE_SWITCH_BUTTON_GAP = 0.34;
+const PLANE_SWITCH_BUTTON_CSS_SIZE = 112;
 const SPLIT_TUTORIAL_STORAGE_KEY = 'breakoutoutout.splitTutorialSeen';
 const SPLIT_TUTORIAL_DURATION = 5;
 const SPLIT_TUTORIAL_WORLD_HEIGHT = 2.4;
@@ -516,11 +527,13 @@ type MainMenuAction = 'start' | 'leaderboard';
 
 type PauseMenuAction = 'resume';
 
-type MenuButtonAction = MainMenuAction | PauseMenuAction;
+type PlaneSwitchAction = 'up' | 'down';
+
+type MenuButtonAction = MainMenuAction | PauseMenuAction | PlaneSwitchAction;
 type MenuButtonVariant = 'primary' | 'secondary';
 
 type MenuButtonPlaneOptions = {
-  userDataKey?: 'menuAction' | 'pauseMenuAction';
+  userDataKey?: 'menuAction' | 'pauseMenuAction' | 'planeSwitchAction';
   variant?: MenuButtonVariant;
   cssWidth?: number;
   cssHeight?: number;
@@ -615,9 +628,11 @@ export class BreakoutGame {
   private readonly projectorBeamPanel: ProjectorBeamPanel | null = null;
   private readonly mainMenu: MainMenuView;
   private readonly pauseMenu: PauseMenuView;
+  private readonly planeSwitchControls = new PlaneSwitchControlsView();
   private readonly splitTutorial = new SplitTutorialView(MAIN_MENU_RENDER_ORDER + 6);
   private readonly scoreboard: ScoreboardAdapter = createScoreboardAdapter();
   private readonly sound = new SoundBank();
+  private readonly landscapePortraitLockMediaQuery = window.matchMedia(LANDSCAPE_PORTRAIT_LOCK_MEDIA_QUERY);
   private readonly keys = new Set<string>();
   private readonly pointerRaycaster = new THREE.Raycaster();
   private readonly pointerNdc = new THREE.Vector2();
@@ -709,6 +724,8 @@ export class BreakoutGame {
   private pressedMenuAction: MainMenuAction | null = null;
   private hoveredPauseMenuAction: PauseMenuAction | null = null;
   private pressedPauseMenuAction: PauseMenuAction | null = null;
+  private hoveredPlaneSwitchAction: PlaneSwitchAction | null = null;
+  private pressedPlaneSwitchAction: PlaneSwitchAction | null = null;
   private splitTutorialActive = false;
   private splitTutorialElapsed = 0;
   private splitTutorialSeen = getSplitTutorialSeenFlag();
@@ -721,6 +738,7 @@ export class BreakoutGame {
   private cameraLookAtY = 0;
   private gameOverCameraElapsed = 0;
   private cameraPlaneTransition: CameraPlaneTransition | null = null;
+  private activePlaneSwitchPointerId: number | null = null;
   private activeTouchPointerId: number | null = null;
   private touchStartX = 0;
   private touchStartY = 0;
@@ -729,6 +747,8 @@ export class BreakoutGame {
   private touchStartTime = 0;
   private touchGestureIntent: TouchGestureIntent = 'pending';
   private touchSwipeCommitted = false;
+  private touchStartBoardX: number | null = null;
+  private touchStartPaddleX: number | null = null;
   private touchPaddleX: number | null = null;
   private postProcessingScreenScale = 1;
   private postProcessingColorBleedScale = 1;
@@ -798,8 +818,10 @@ export class BreakoutGame {
     this.pauseMenu.setVisible(false);
     this.scene.add(this.mainMenu.group);
     this.scene.add(this.pauseMenu.group);
+    this.scene.add(this.planeSwitchControls.group);
     this.scene.add(this.splitTutorial.mesh);
     this.attachInput();
+    this.updateLandscapePortraitLockDirection();
     this.resize();
     void this.refreshLeaderboard();
   }
@@ -1330,6 +1352,9 @@ export class BreakoutGame {
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
     window.addEventListener('resize', this.resize);
+    window.addEventListener('orientationchange', this.handleOrientationLockChange);
+    window.screen.orientation?.addEventListener('change', this.handleOrientationLockChange);
+    this.landscapePortraitLockMediaQuery.addEventListener('change', this.handleOrientationLockChange);
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
     this.renderer.domElement.addEventListener('pointermove', this.handlePointerMove);
@@ -1487,6 +1512,17 @@ export class BreakoutGame {
       return;
     }
 
+    const planeSwitchAction = this.planeSwitchActionAtPointer(event.clientX, event.clientY);
+    if (planeSwitchAction) {
+      event.preventDefault();
+      this.activePlaneSwitchPointerId = event.pointerId;
+      this.setHoveredPlaneSwitchAction(planeSwitchAction);
+      this.setPressedPlaneSwitchAction(planeSwitchAction);
+      this.renderer.domElement.style.cursor = 'pointer';
+      this.renderer.domElement.setPointerCapture(event.pointerId);
+      return;
+    }
+
     if (!this.isTouchPointer(event) || this.activeTouchPointerId !== null) {
       return;
     }
@@ -1501,7 +1537,7 @@ export class BreakoutGame {
     this.touchGestureIntent = 'pending';
     this.touchSwipeCommitted = false;
     this.renderer.domElement.setPointerCapture(event.pointerId);
-    this.updateTouchPaddle(event.clientX, event.clientY);
+    this.beginTouchPaddleDrag(event.clientX, event.clientY);
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
@@ -1521,6 +1557,25 @@ export class BreakoutGame {
     if (this.isGameFinished()) {
       this.updateEndGameCursor(event.clientX, event.clientY);
       return;
+    }
+
+    if (event.pointerId === this.activePlaneSwitchPointerId) {
+      event.preventDefault();
+      const action = this.planeSwitchActionAtPointer(event.clientX, event.clientY);
+      this.setHoveredPlaneSwitchAction(action);
+      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      return;
+    }
+
+    if (this.activeTouchPointerId === null) {
+      const action = this.planeSwitchActionAtPointer(event.clientX, event.clientY);
+      this.setHoveredPlaneSwitchAction(action);
+      if (action) {
+        this.renderer.domElement.style.cursor = 'pointer';
+        return;
+      }
+
+      this.renderer.domElement.style.cursor = '';
     }
 
     if (event.pointerId !== this.activeTouchPointerId) {
@@ -1572,6 +1627,21 @@ export class BreakoutGame {
       return;
     }
 
+    if (event.pointerId === this.activePlaneSwitchPointerId) {
+      event.preventDefault();
+      const action = this.planeSwitchActionAtPointer(event.clientX, event.clientY);
+      const pressedAction = this.pressedPlaneSwitchAction;
+      this.releaseTouchPointer(event.pointerId);
+      this.activePlaneSwitchPointerId = null;
+      this.setHoveredPlaneSwitchAction(action);
+      this.setPressedPlaneSwitchAction(null);
+      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      if (action && action === pressedAction) {
+        this.handlePlaneSwitchAction(action);
+      }
+      return;
+    }
+
     if (event.pointerId !== this.activeTouchPointerId) {
       return;
     }
@@ -1598,6 +1668,15 @@ export class BreakoutGame {
     if (this.isMainMenuActive) {
       event.preventDefault();
       this.setPressedMenuAction(null);
+      return;
+    }
+
+    if (event.pointerId === this.activePlaneSwitchPointerId) {
+      event.preventDefault();
+      this.releaseTouchPointer(event.pointerId);
+      this.activePlaneSwitchPointerId = null;
+      this.setHoveredPlaneSwitchAction(null);
+      this.setPressedPlaneSwitchAction(null);
       return;
     }
 
@@ -1679,16 +1758,40 @@ export class BreakoutGame {
     return event.pointerType === 'touch' || event.pointerType === 'pen';
   }
 
+  private beginTouchPaddleDrag(clientX: number, clientY: number): void {
+    this.touchStartBoardX = null;
+    this.touchStartPaddleX = null;
+    this.touchPaddleX = null;
+
+    if (!this.gameStarted || this.autopilot || this.isGameFinished()) {
+      return;
+    }
+
+    const instance = this.selectedInstance;
+    const boardX = this.pointerToSelectedBoardX(clientX, clientY);
+    if (!instance || boardX === null) {
+      return;
+    }
+
+    this.touchStartBoardX = boardX;
+    this.touchStartPaddleX = instance.getPaddleX();
+  }
+
   private updateTouchPaddle(clientX: number, clientY: number): void {
     if (!this.gameStarted || this.autopilot || this.isGameFinished()) {
       return;
     }
 
-    const paddleX = this.pointerToSelectedBoardX(clientX, clientY);
-    if (paddleX === null) {
+    if (this.touchStartBoardX === null || this.touchStartPaddleX === null) {
       return;
     }
 
+    const boardX = this.pointerToSelectedBoardX(clientX, clientY);
+    if (boardX === null) {
+      return;
+    }
+
+    const paddleX = this.touchStartPaddleX + boardX - this.touchStartBoardX;
     this.touchPaddleX = paddleX;
     this.selectedInstance?.placePaddleAt(paddleX);
   }
@@ -1724,12 +1827,37 @@ export class BreakoutGame {
       return false;
     }
 
+    let localX = clientX - bounds.left;
+    let localY = clientY - bounds.top;
+    let width = bounds.width;
+    let height = bounds.height;
+
+    if (this.landscapePortraitLockMediaQuery.matches) {
+      const reversed = this.shell.classList.contains('is-landscape-lock-reversed');
+      const rotatedX = reversed ? localY : bounds.height - localY;
+      const rotatedY = reversed ? bounds.width - localX : localX;
+      localX = rotatedX;
+      localY = rotatedY;
+      width = bounds.height;
+      height = bounds.width;
+    }
+
     this.pointerNdc.set(
-      ((clientX - bounds.left) / bounds.width) * 2 - 1,
-      -(((clientY - bounds.top) / bounds.height) * 2 - 1)
+      (localX / width) * 2 - 1,
+      -((localY / height) * 2 - 1)
     );
     this.pointerRaycaster.setFromCamera(this.pointerNdc, this.camera);
     return true;
+  }
+
+  private readonly handleOrientationLockChange = (): void => {
+    this.updateLandscapePortraitLockDirection();
+    requestAnimationFrame(() => this.resize());
+  };
+
+  private updateLandscapePortraitLockDirection(): void {
+    const reversed = this.landscapePortraitLockMediaQuery.matches && currentOrientationAngle() === 270;
+    this.shell.classList.toggle('is-landscape-lock-reversed', reversed);
   }
 
   private endGameActionAtPointer(clientX: number, clientY: number): EndGameAction | null {
@@ -1800,6 +1928,8 @@ export class BreakoutGame {
     if (this.touchGestureIntent === 'pending' && Math.max(absX, absY) >= TOUCH_GESTURE_LOCK_DISTANCE) {
       if (absY > absX * TOUCH_SWIPE_AXIS_RATIO) {
         this.touchGestureIntent = 'vertical-swipe';
+        this.touchStartBoardX = null;
+        this.touchStartPaddleX = null;
         this.touchPaddleX = null;
       } else if (absX > absY * TOUCH_PADDLE_AXIS_RATIO) {
         this.touchGestureIntent = 'paddle';
@@ -1812,7 +1942,9 @@ export class BreakoutGame {
 
     if (absY >= this.touchSwipeCommitDistance(absY, eventTime)) {
       this.touchSwipeCommitted = true;
-      this.navigateInstances(deltaY < 0 ? 1 : -1);
+      if (TOUCH_VERTICAL_SWIPE_ENABLED) {
+        this.navigateInstances(deltaY < 0 ? 1 : -1);
+      }
     }
   }
 
@@ -1855,6 +1987,8 @@ export class BreakoutGame {
     this.touchStartTime = 0;
     this.touchGestureIntent = 'pending';
     this.touchSwipeCommitted = false;
+    this.touchStartBoardX = null;
+    this.touchStartPaddleX = null;
     this.touchPaddleX = null;
   }
 
@@ -1865,6 +1999,7 @@ export class BreakoutGame {
   };
 
   private readonly resize = (): void => {
+    this.updateLandscapePortraitLockDirection();
     const width = Math.max(1, this.shell.clientWidth);
     const height = Math.max(1, this.shell.clientHeight);
     const nextPostProcessingScreenScale = postProcessingScreenScaleForSize(width, height);
@@ -1958,6 +2093,7 @@ export class BreakoutGame {
     this.syncViews(time / 1000, delta);
     this.updateCamera(delta);
     this.mainMenu.update(time / 1000, this.camera, MAIN_MENU_CAMERA_DISTANCE);
+    this.updatePlaneSwitchControls();
     this.updatePostProcessingDebugDisplay();
     this.updatePlaneHudBillboards();
     this.updateSplitTutorialBillboard();
@@ -1991,6 +2127,13 @@ export class BreakoutGame {
     this.setPressedPauseMenuAction(null);
 
     this.keys.clear();
+    if (this.activePlaneSwitchPointerId !== null) {
+      this.releaseTouchPointer(this.activePlaneSwitchPointerId);
+    }
+    this.activePlaneSwitchPointerId = null;
+    this.setHoveredPlaneSwitchAction(null);
+    this.setPressedPlaneSwitchAction(null);
+    this.planeSwitchControls.setVisible(false);
     if (this.activeTouchPointerId !== null) {
       this.releaseTouchPointer(this.activeTouchPointerId);
     }
@@ -2040,6 +2183,38 @@ export class BreakoutGame {
 
     this.pressedPauseMenuAction = action;
     this.pauseMenu.setPressedAction(action);
+  }
+
+  private planeSwitchActionAtPointer(clientX: number, clientY: number): PlaneSwitchAction | null {
+    if (!this.shouldShowPlaneSwitchControls() || !this.updatePointerRay(clientX, clientY)) {
+      return null;
+    }
+
+    const hit = this.pointerRaycaster.intersectObjects(this.planeSwitchControls.buttonMeshes, false)[0];
+    const action = hit?.object.userData.planeSwitchAction;
+    return isPlaneSwitchAction(action) ? action : null;
+  }
+
+  private setHoveredPlaneSwitchAction(action: PlaneSwitchAction | null): void {
+    if (this.hoveredPlaneSwitchAction === action) {
+      return;
+    }
+
+    this.hoveredPlaneSwitchAction = action;
+    this.planeSwitchControls.setHoveredAction(action);
+  }
+
+  private setPressedPlaneSwitchAction(action: PlaneSwitchAction | null): void {
+    if (this.pressedPlaneSwitchAction === action) {
+      return;
+    }
+
+    this.pressedPlaneSwitchAction = action;
+    this.planeSwitchControls.setPressedAction(action);
+  }
+
+  private handlePlaneSwitchAction(action: PlaneSwitchAction): void {
+    this.navigateInstances(action === 'up' ? 1 : -1);
   }
 
   private isPauseButtonEventTarget(target: EventTarget | null): boolean {
@@ -2097,6 +2272,13 @@ export class BreakoutGame {
 
   private resetGame(instanceCount: number, options: BreakoutoutoutOptions): void {
     this.clearTouchInput();
+    if (this.activePlaneSwitchPointerId !== null) {
+      this.releaseTouchPointer(this.activePlaneSwitchPointerId);
+    }
+    this.activePlaneSwitchPointerId = null;
+    this.setHoveredPlaneSwitchAction(null);
+    this.setPressedPlaneSwitchAction(null);
+    this.planeSwitchControls.setVisible(false);
     this.keys.clear();
     this.pendingSplits.length = 0;
     this.splitBloomPulses.length = 0;
@@ -4135,6 +4317,31 @@ export class BreakoutGame {
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
     }
+  }
+
+  private updatePlaneSwitchControls(): void {
+    const visible = this.shouldShowPlaneSwitchControls();
+    this.planeSwitchControls.setVisible(visible);
+
+    if (!visible) {
+      this.setHoveredPlaneSwitchAction(null);
+      this.setPressedPlaneSwitchAction(null);
+      return;
+    }
+
+    this.planeSwitchControls.update(this.camera);
+  }
+
+  private shouldShowPlaneSwitchControls(): boolean {
+    return isMobileControlSurface()
+      && this.gameStarted
+      && !this.projectorDebug
+      && !this.paused
+      && !this.splitSequenceActive
+      && !this.splitTutorialActive
+      && !this.isGameFinished()
+      && !this.isFatalMissSequenceActive()
+      && this.instances.length > 1;
   }
 
   private updateSplitTutorialBillboard(): void {
@@ -6243,6 +6450,114 @@ class LeaderboardPanelPlane {
   }
 }
 
+class PlaneSwitchControlsView {
+  readonly group = new THREE.Group();
+  readonly buttonMeshes: THREE.Mesh[];
+
+  private readonly cameraForward = new THREE.Vector3();
+  private readonly buttons = new Map<PlaneSwitchAction, MenuButtonPlane>();
+  private hoveredAction: PlaneSwitchAction | null = null;
+  private pressedAction: PlaneSwitchAction | null = null;
+
+  constructor() {
+    const upButton = new MenuButtonPlane('up', '↑', PLANE_SWITCH_CONTROLS_RENDER_ORDER, {
+      userDataKey: 'planeSwitchAction',
+      cssWidth: PLANE_SWITCH_BUTTON_CSS_SIZE,
+      cssHeight: PLANE_SWITCH_BUTTON_CSS_SIZE,
+      fontSize: 58
+    });
+    const downButton = new MenuButtonPlane('down', '↓', PLANE_SWITCH_CONTROLS_RENDER_ORDER, {
+      userDataKey: 'planeSwitchAction',
+      cssWidth: PLANE_SWITCH_BUTTON_CSS_SIZE,
+      cssHeight: PLANE_SWITCH_BUTTON_CSS_SIZE,
+      fontSize: 58
+    });
+
+    scaleMenuCanvasPlane(
+      upButton.mesh,
+      upButton.cssWidth,
+      upButton.cssHeight,
+      PLANE_SWITCH_BUTTON_WORLD_HEIGHT,
+      PLANE_SWITCH_BUTTON_MAX_WIDTH
+    );
+    scaleMenuCanvasPlane(
+      downButton.mesh,
+      downButton.cssWidth,
+      downButton.cssHeight,
+      PLANE_SWITCH_BUTTON_WORLD_HEIGHT,
+      PLANE_SWITCH_BUTTON_MAX_WIDTH
+    );
+
+    const buttonOffset = (upButton.mesh.scale.x + PLANE_SWITCH_BUTTON_GAP) / 2;
+    upButton.mesh.position.set(-buttonOffset, 0, 0);
+    downButton.mesh.position.set(buttonOffset, 0, 0);
+
+    this.buttons.set('up', upButton);
+    this.buttons.set('down', downButton);
+    this.buttonMeshes = [upButton.mesh, downButton.mesh];
+    this.group.visible = false;
+    this.group.add(upButton.mesh, downButton.mesh);
+  }
+
+  setVisible(visible: boolean): void {
+    if (this.group.visible === visible) {
+      return;
+    }
+
+    this.group.visible = visible;
+    if (!visible) {
+      this.setHoveredAction(null);
+      this.setPressedAction(null);
+    }
+  }
+
+  setHoveredAction(action: PlaneSwitchAction | null): void {
+    if (this.hoveredAction === action) {
+      return;
+    }
+
+    this.hoveredAction = action;
+    this.refreshButtonStates();
+  }
+
+  setPressedAction(action: PlaneSwitchAction | null): void {
+    if (this.pressedAction === action) {
+      return;
+    }
+
+    this.pressedAction = action;
+    this.refreshButtonStates();
+  }
+
+  update(camera: THREE.PerspectiveCamera): void {
+    if (!this.group.visible) {
+      return;
+    }
+
+    const visibleHeight = 2
+      * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)
+      * PLANE_SWITCH_CONTROLS_DISTANCE;
+    const bottomMargin = Math.max(
+      PLANE_SWITCH_CONTROLS_BOTTOM_MARGIN,
+      visibleHeight * PLANE_SWITCH_CONTROLS_BOTTOM_MARGIN_RATIO
+    );
+
+    camera.getWorldDirection(this.cameraForward);
+    this.group.position
+      .copy(camera.position)
+      .addScaledVector(this.cameraForward, PLANE_SWITCH_CONTROLS_DISTANCE);
+    this.group.quaternion.copy(camera.quaternion);
+    this.group.translateY(-visibleHeight / 2 + bottomMargin + PLANE_SWITCH_BUTTON_WORLD_HEIGHT / 2);
+  }
+
+  private refreshButtonStates(): void {
+    for (const [action, button] of this.buttons) {
+      const hovered = action === this.hoveredAction;
+      button.setState(hovered, hovered && action === this.pressedAction);
+    }
+  }
+}
+
 class MainMenuView {
   readonly group = new THREE.Group();
   readonly buttonMeshes: THREE.Mesh[];
@@ -6907,7 +7222,7 @@ class SplitTutorialView {
 
   private drawMobileTutorial(): void {
     const topLine = 'change dimension';
-    const bottomLine = 'with swipe up/down';
+    const bottomLine = 'with arrow buttons';
     const centerX = this.cssWidth / 2;
     const topLineY = 74;
     const bottomLineY = 146;
@@ -7086,12 +7401,34 @@ function isTouchTutorialDevice(): boolean {
     || window.matchMedia('(hover: none)').matches;
 }
 
+function isMobileControlSurface(): boolean {
+  return isTouchTutorialDevice() || window.innerWidth <= 820;
+}
+
+function currentOrientationAngle(): number {
+  const screenAngle = window.screen.orientation?.angle;
+  if (typeof screenAngle === 'number') {
+    return normalizeOrientationAngle(screenAngle);
+  }
+
+  const legacyAngle = (window as Window & { orientation?: number }).orientation;
+  return typeof legacyAngle === 'number' ? normalizeOrientationAngle(legacyAngle) : 0;
+}
+
+function normalizeOrientationAngle(angle: number): number {
+  return ((angle % 360) + 360) % 360;
+}
+
 function isMainMenuAction(value: unknown): value is MainMenuAction {
   return value === 'start' || value === 'leaderboard';
 }
 
 function isPauseMenuAction(value: unknown): value is PauseMenuAction {
   return value === 'resume';
+}
+
+function isPlaneSwitchAction(value: unknown): value is PlaneSwitchAction {
+  return value === 'up' || value === 'down';
 }
 
 function isGameControlKey(code: string): boolean {

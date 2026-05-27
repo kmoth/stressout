@@ -66,6 +66,40 @@ textarea {
   display: block;
 }
 
+.three-layer:focus {
+  outline: none;
+}
+
+@media (orientation: landscape) and (max-height: 540px),
+  (orientation: landscape) and (hover: none) and (pointer: coarse) {
+  .game-shell {
+    inset: 0 auto auto 0;
+    width: 100vh;
+    height: 100vw;
+    transform: translateY(100vh) rotate(-90deg);
+    transform-origin: top left;
+  }
+
+  .game-shell.is-landscape-lock-reversed {
+    transform: translateX(100vw) rotate(90deg);
+  }
+}
+
+@supports (height: 100dvh) {
+  @media (orientation: landscape) and (max-height: 540px),
+    (orientation: landscape) and (hover: none) and (pointer: coarse) {
+    .game-shell {
+      width: 100dvh;
+      height: 100dvw;
+      transform: translateY(100dvh) rotate(-90deg);
+    }
+
+    .game-shell.is-landscape-lock-reversed {
+      transform: translateX(100dvw) rotate(90deg);
+    }
+  }
+}
+
 .pause-toggle {
   position: absolute;
   top: 0.875rem;

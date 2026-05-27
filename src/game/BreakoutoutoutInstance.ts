@@ -403,6 +403,10 @@ export class BreakoutoutoutInstance {
     return this.phase;
   }
 
+  getPaddleX(): number {
+    return this.paddleX;
+  }
+
   hasFatalMissPending(): boolean {
     return this.fatalMissPending;
   }
