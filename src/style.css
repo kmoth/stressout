@@ -70,6 +70,35 @@ textarea {
   outline: none;
 }
 
+.leaderboard-name-input {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 6;
+  display: none;
+  width: min(18rem, calc(100% - 2rem));
+  height: 3.75rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  opacity: 0.01;
+  color: transparent;
+  caret-color: transparent;
+  background: transparent;
+  outline: none;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  touch-action: manipulation;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.leaderboard-name-input.is-active {
+  display: block;
+  pointer-events: auto;
+}
+
 @media (orientation: landscape) and (max-height: 540px),
   (orientation: landscape) and (hover: none) and (pointer: coarse) {
   .game-shell {

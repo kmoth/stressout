@@ -221,6 +221,11 @@ const PLANE_LEADERBOARD_BUTTON_MAX_WIDTH = 7.2;
 const PLANE_LEADERBOARD_BUTTON_Y = -4.42;
 const PLANE_LEADERBOARD_BUTTON_Z = 0.91;
 const LEADERBOARD_NAME_MAX_LENGTH = 6;
+const END_GAME_PROMPT_NAME_BOX_WIDTH = 52;
+const END_GAME_PROMPT_NAME_BOX_HEIGHT = 54;
+const END_GAME_PROMPT_NAME_BOX_GAP = 12;
+const END_GAME_PROMPT_NAME_BOX_Y = 158;
+const END_GAME_PROMPT_NAME_INPUT_PADDING = 8;
 const LEADERBOARD_PANEL_WORLD_HEIGHT = BOARD_HEIGHT;
 const LEADERBOARD_PANEL_MAX_WIDTH = BOARD_WIDTH;
 const LEADERBOARD_PANEL_Y = 0;
@@ -618,6 +623,7 @@ export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot' | 'san
 export class BreakoutGame {
   private readonly shell: HTMLDivElement;
   private readonly pauseButton: HTMLButtonElement;
+  private readonly leaderboardNameInput: HTMLInputElement;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 180);
   private readonly renderer = new THREE.WebGPURenderer({ antialias: true, alpha: true });
@@ -642,6 +648,12 @@ export class BreakoutGame {
   private readonly pointerBoardHit = new THREE.Vector3();
   private readonly pointerLocalHit = new THREE.Vector3();
   private readonly pointerBoardQuaternion = new THREE.Quaternion();
+  private readonly leaderboardNameInputCorners = [
+    new THREE.Vector3(),
+    new THREE.Vector3(),
+    new THREE.Vector3(),
+    new THREE.Vector3()
+  ] as const;
   private readonly planeHudParentQuaternion = new THREE.Quaternion();
   private readonly planeHudCameraQuaternion = new THREE.Quaternion();
   private readonly initialInstanceCount: number;
@@ -785,6 +797,8 @@ export class BreakoutGame {
     this.shell.appendChild(this.renderer.domElement);
     this.pauseButton = this.createPauseButton();
     this.shell.appendChild(this.pauseButton);
+    this.leaderboardNameInput = this.createLeaderboardNameInput();
+    this.shell.appendChild(this.leaderboardNameInput);
     this.scene.add(this.camera);
 
     this.postProcessingUniforms = createPostProcessingUniforms(this.postProcessingSettings);
@@ -1372,6 +1386,7 @@ export class BreakoutGame {
     if (this.endGameLeaderboardVisible && event.code === 'Escape') {
       event.preventDefault();
       this.endGameLeaderboardVisible = false;
+      this.syncLeaderboardNameInput();
       return;
     }
 
@@ -1508,6 +1523,11 @@ export class BreakoutGame {
     if (this.isGameFinished()) {
       if (this.endGameActionAtPointer(event.clientX, event.clientY)) {
         event.preventDefault();
+        return;
+      }
+
+      if (this.isLeaderboardNameInputEditable()) {
+        this.focusLeaderboardNameInput();
       }
       return;
     }
@@ -1905,6 +1925,7 @@ export class BreakoutGame {
         void this.refreshLeaderboard();
       }
       this.endGameLeaderboardVisible = !this.endGameLeaderboardVisible;
+      this.syncLeaderboardNameInput();
       return;
     }
 
@@ -2097,6 +2118,7 @@ export class BreakoutGame {
     this.updatePostProcessingDebugDisplay();
     this.updatePlaneHudBillboards();
     this.updateSplitTutorialBillboard();
+    this.syncLeaderboardNameInput();
     this.renderPipeline.render();
     requestAnimationFrame(this.tick);
   };
@@ -2111,6 +2133,59 @@ export class BreakoutGame {
     button.addEventListener('click', () => this.setPaused(!this.paused));
     return button;
   }
+
+  private createLeaderboardNameInput(): HTMLInputElement {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'leaderboard-name-input';
+    input.maxLength = LEADERBOARD_NAME_MAX_LENGTH;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.inputMode = 'text';
+    input.setAttribute('aria-label', 'High score name');
+    input.setAttribute('inputmode', 'text');
+    input.setAttribute('autocapitalize', 'characters');
+    input.setAttribute('enterkeyhint', 'done');
+    input.setAttribute('pattern', '[A-Za-z0-9]*');
+    input.disabled = true;
+    input.tabIndex = -1;
+    input.addEventListener('input', this.handleLeaderboardNameInput);
+    input.addEventListener('keydown', this.handleLeaderboardNameInputKeyDown);
+    input.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    return input;
+  }
+
+  private readonly handleLeaderboardNameInput = (): void => {
+    const submission = this.leaderboardSubmission;
+    if (!submission || (submission.state !== 'entry' && submission.state !== 'error')) {
+      this.syncLeaderboardNameInput();
+      return;
+    }
+
+    const normalizedName = normalizeLeaderboardName(this.leaderboardNameInput.value);
+    if (this.leaderboardNameInput.value !== normalizedName) {
+      this.leaderboardNameInput.value = normalizedName;
+    }
+
+    this.setLeaderboardSubmissionName(normalizedName);
+  };
+
+  private readonly handleLeaderboardNameInputKeyDown = (event: KeyboardEvent): void => {
+    event.stopPropagation();
+
+    if (event.code === 'Enter') {
+      event.preventDefault();
+      this.submitLeaderboardEntry();
+      return;
+    }
+
+    if (event.code === 'Escape') {
+      event.preventDefault();
+      this.cancelLeaderboardSubmission();
+    }
+  };
 
   private setPaused(paused: boolean): void {
     if (this.paused === paused) {
@@ -2308,6 +2383,7 @@ export class BreakoutGame {
     this.globalScore = 0;
     this.leaderboardSubmission = null;
     this.endGameLeaderboardVisible = false;
+    this.syncLeaderboardNameInput();
     this.gameSpeed = 1;
     this.gameSpeedTween = null;
     this.splitSequenceActive = false;
@@ -2718,6 +2794,8 @@ export class BreakoutGame {
       name: '',
       state: 'entry'
     };
+    this.syncLeaderboardNameInput();
+    this.focusLeaderboardNameInput();
   }
 
   private handleLeaderboardEntryKeyDown(event: KeyboardEvent): void {
@@ -2727,14 +2805,12 @@ export class BreakoutGame {
     }
 
     if (event.code === 'Backspace') {
-      submission.name = submission.name.slice(0, -1);
-      submission.state = 'entry';
-      submission.message = undefined;
+      this.setLeaderboardSubmissionName(submission.name.slice(0, -1));
       return;
     }
 
     if (event.code === 'Escape') {
-      this.leaderboardSubmission = null;
+      this.cancelLeaderboardSubmission();
       return;
     }
 
@@ -2752,9 +2828,26 @@ export class BreakoutGame {
       return;
     }
 
-    submission.name += character;
+    this.setLeaderboardSubmissionName(submission.name + character);
+  }
+
+  private setLeaderboardSubmissionName(name: string): void {
+    const submission = this.leaderboardSubmission;
+    if (!submission || (submission.state !== 'entry' && submission.state !== 'error')) {
+      return;
+    }
+
+    submission.name = normalizeLeaderboardName(name);
     submission.state = 'entry';
     submission.message = undefined;
+    if (this.leaderboardNameInput.value !== submission.name) {
+      this.leaderboardNameInput.value = submission.name;
+    }
+  }
+
+  private cancelLeaderboardSubmission(): void {
+    this.leaderboardSubmission = null;
+    this.syncLeaderboardNameInput();
   }
 
   private submitLeaderboardEntry(): void {
@@ -2766,11 +2859,14 @@ export class BreakoutGame {
     if (submission.name.length === 0) {
       submission.state = 'error';
       submission.message = 'ENTER NAME';
+      this.syncLeaderboardNameInput();
+      this.focusLeaderboardNameInput();
       return;
     }
 
     submission.state = 'submitting';
     submission.message = 'SAVING';
+    this.syncLeaderboardNameInput();
     void this.submitLeaderboardEntryAsync(submission);
   }
 
@@ -2785,6 +2881,7 @@ export class BreakoutGame {
       this.leaderboardLoadState = 'ready';
       submission.state = 'submitted';
       submission.message = response.accepted ? 'SAVED' : 'TOP 10 CHANGED';
+      this.syncLeaderboardNameInput();
     } catch (error) {
       if (this.leaderboardSubmission !== submission) {
         return;
@@ -2793,6 +2890,7 @@ export class BreakoutGame {
       console.warn('Leaderboard submission failed.', error);
       submission.state = 'error';
       submission.message = 'SAVE FAILED';
+      this.syncLeaderboardNameInput();
     }
   }
 
@@ -2800,6 +2898,130 @@ export class BreakoutGame {
     const state = this.leaderboardSubmission?.state;
     return !this.endGameLeaderboardVisible
       && (state === 'entry' || state === 'error' || state === 'submitting');
+  }
+
+  private isLeaderboardNameInputEditable(): boolean {
+    const state = this.leaderboardSubmission?.state;
+    return !this.paused
+      && !this.endGameLeaderboardVisible
+      && this.isGameFinished()
+      && (state === 'entry' || state === 'error');
+  }
+
+  private syncLeaderboardNameInput(): void {
+    const editable = this.isLeaderboardNameInputEditable();
+    const input = this.leaderboardNameInput;
+    input.classList.toggle('is-active', editable);
+    input.disabled = !editable;
+    input.readOnly = !editable;
+    input.tabIndex = editable ? 0 : -1;
+    input.setAttribute('aria-hidden', String(!editable));
+
+    if (!editable) {
+      if (document.activeElement === input) {
+        input.blur();
+      }
+      input.value = '';
+      return;
+    }
+
+    const submissionName = this.leaderboardSubmission?.name ?? '';
+    if (input.value !== submissionName) {
+      input.value = submissionName;
+    }
+
+    this.updateLeaderboardNameInputLayout();
+  }
+
+  private focusLeaderboardNameInput(): void {
+    if (!this.isLeaderboardNameInputEditable()) {
+      return;
+    }
+
+    this.syncLeaderboardNameInput();
+    try {
+      this.leaderboardNameInput.focus({ preventScroll: true });
+    } catch {
+      this.leaderboardNameInput.focus();
+    }
+
+    const nameLength = this.leaderboardNameInput.value.length;
+    this.leaderboardNameInput.setSelectionRange(nameLength, nameLength);
+  }
+
+  private updateLeaderboardNameInputLayout(): void {
+    const view = this.selectedView;
+    if (!view || !view.endGamePrompt.mesh.visible) {
+      this.leaderboardNameInput.style.left = '50%';
+      this.leaderboardNameInput.style.top = '50%';
+      this.leaderboardNameInput.style.width = 'min(18rem, calc(100% - 2rem))';
+      this.leaderboardNameInput.style.height = '3.75rem';
+      this.leaderboardNameInput.style.transform = 'translate(-50%, -50%)';
+      return;
+    }
+
+    view.endGamePrompt.mesh.updateWorldMatrix(true, false);
+    this.camera.updateMatrixWorld();
+
+    const prompt = view.endGamePrompt;
+    const totalNameBoxWidth = LEADERBOARD_NAME_MAX_LENGTH * END_GAME_PROMPT_NAME_BOX_WIDTH
+      + (LEADERBOARD_NAME_MAX_LENGTH - 1) * END_GAME_PROMPT_NAME_BOX_GAP;
+    const left = (prompt.cssWidth - totalNameBoxWidth) / 2 - END_GAME_PROMPT_NAME_INPUT_PADDING;
+    const top = END_GAME_PROMPT_NAME_BOX_Y - END_GAME_PROMPT_NAME_INPUT_PADDING;
+    const right = left + totalNameBoxWidth + END_GAME_PROMPT_NAME_INPUT_PADDING * 2;
+    const bottom = END_GAME_PROMPT_NAME_BOX_Y
+      + END_GAME_PROMPT_NAME_BOX_HEIGHT
+      + END_GAME_PROMPT_NAME_INPUT_PADDING;
+    const corners = this.leaderboardNameInputCorners;
+
+    if (
+      !this.projectHudPlaneCssPoint(prompt, left, top, corners[0])
+      || !this.projectHudPlaneCssPoint(prompt, right, top, corners[1])
+      || !this.projectHudPlaneCssPoint(prompt, right, bottom, corners[2])
+      || !this.projectHudPlaneCssPoint(prompt, left, bottom, corners[3])
+    ) {
+      return;
+    }
+
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const corner of corners) {
+      minX = Math.min(minX, corner.x);
+      minY = Math.min(minY, corner.y);
+      maxX = Math.max(maxX, corner.x);
+      maxY = Math.max(maxY, corner.y);
+    }
+
+    this.leaderboardNameInput.style.left = `${minX}px`;
+    this.leaderboardNameInput.style.top = `${minY}px`;
+    this.leaderboardNameInput.style.width = `${Math.max(1, maxX - minX)}px`;
+    this.leaderboardNameInput.style.height = `${Math.max(1, maxY - minY)}px`;
+    this.leaderboardNameInput.style.transform = 'none';
+  }
+
+  private projectHudPlaneCssPoint(
+    plane: { cssWidth: number; cssHeight: number; mesh: THREE.Mesh },
+    cssX: number,
+    cssY: number,
+    target: THREE.Vector3
+  ): boolean {
+    target.set(
+      cssX / plane.cssWidth - 0.5,
+      0.5 - cssY / plane.cssHeight,
+      0
+    );
+    target.applyMatrix4(plane.mesh.matrixWorld);
+    target.project(this.camera);
+
+    if (!Number.isFinite(target.x) || !Number.isFinite(target.y) || !Number.isFinite(target.z)) {
+      return false;
+    }
+
+    target.x = (target.x + 1) * 0.5 * this.shell.clientWidth;
+    target.y = (1 - (target.y + 1) * 0.5) * this.shell.clientHeight;
+    return true;
   }
 
   private endGamePromptState(visible: boolean): EndGamePromptState {
@@ -6162,12 +6384,12 @@ class EndGamePromptPlane {
   }
 
   private drawNameBoxes(name: string, submitted: boolean): void {
-    const boxWidth = 52;
-    const boxHeight = 54;
-    const gap = 12;
+    const boxWidth = END_GAME_PROMPT_NAME_BOX_WIDTH;
+    const boxHeight = END_GAME_PROMPT_NAME_BOX_HEIGHT;
+    const gap = END_GAME_PROMPT_NAME_BOX_GAP;
     const totalWidth = LEADERBOARD_NAME_MAX_LENGTH * boxWidth + (LEADERBOARD_NAME_MAX_LENGTH - 1) * gap;
     const startX = (this.cssWidth - totalWidth) / 2;
-    const y = 158;
+    const y = END_GAME_PROMPT_NAME_BOX_Y;
 
     for (let index = 0; index < LEADERBOARD_NAME_MAX_LENGTH; index += 1) {
       const x = startX + index * (boxWidth + gap);
@@ -7336,6 +7558,13 @@ function titleFont(fontSize: number): string {
 
 function formatLeaderboardScore(score: number): string {
   return Math.max(0, Math.floor(score)).toString().padStart(5, '0');
+}
+
+function normalizeLeaderboardName(name: string): string {
+  return name
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, LEADERBOARD_NAME_MAX_LENGTH);
 }
 
 function scaleMenuCanvasPlane(
