@@ -297,6 +297,10 @@ const RENDER_MESH_DEPTHS = {
 } as const;
 const SPECIAL_BRICK_MARK_DEPTH = RENDER_MESH_DEPTHS.boardMarker;
 const SPECIAL_BRICK_MARK_Z = RENDER_MESH_DEPTHS.playfield / 2 + SPECIAL_BRICK_MARK_DEPTH / 2 + 0.006;
+const SPECIAL_BRICK_OUTER_MARK_WIDTH_RATIO = 0.96;
+const SPECIAL_BRICK_OUTER_MARK_HEIGHT_RATIO = 0.9;
+const SPLIT_BRICK_INNER_MARK_WIDTH_RATIO = 0.52;
+const SPLIT_BRICK_INNER_MARK_HEIGHT_RATIO = 0.46;
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
 const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
   pixelSize: 1,
@@ -1392,13 +1396,25 @@ export class BreakoutGame {
 
   private addSplitBrickMark(mesh: THREE.Mesh, brick: BrickSnapshot): void {
     const thickness = Math.max(brick.height * 0.055, 0.026);
-    this.addBrickFaceRectangleOutline(mesh, brick.width * 0.7, brick.height * 0.62, thickness, WALL_TEXTURE_COLOR);
-    this.addBrickFaceRectangleOutline(mesh, brick.width * 0.43, brick.height * 0.36, thickness, WALL_TEXTURE_COLOR);
+    this.addBrickFaceRectangleOutline(
+      mesh,
+      brick.width * SPECIAL_BRICK_OUTER_MARK_WIDTH_RATIO,
+      brick.height * SPECIAL_BRICK_OUTER_MARK_HEIGHT_RATIO,
+      thickness,
+      WALL_TEXTURE_COLOR
+    );
+    this.addBrickFaceRectangleOutline(
+      mesh,
+      brick.width * SPLIT_BRICK_INNER_MARK_WIDTH_RATIO,
+      brick.height * SPLIT_BRICK_INNER_MARK_HEIGHT_RATIO,
+      thickness,
+      WALL_TEXTURE_COLOR
+    );
   }
 
   private addProjectorBrickMark(mesh: THREE.Mesh, brick: BrickSnapshot): void {
-    const width = brick.width * 0.78;
-    const height = brick.height * 0.64;
+    const width = brick.width * SPECIAL_BRICK_OUTER_MARK_WIDTH_RATIO;
+    const height = brick.height * SPECIAL_BRICK_OUTER_MARK_HEIGHT_RATIO;
     const dotRadius = Math.max(Math.min(brick.width, brick.height) * 0.045, 0.018);
     const horizontalCount = Math.max(9, Math.round(width / (dotRadius * 3.2)));
     const verticalCount = Math.max(4, Math.round(height / (dotRadius * 3.2)));
