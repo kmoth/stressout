@@ -129,32 +129,6 @@ textarea {
   }
 }
 
-.pause-toggle {
-  position: absolute;
-  top: 0.875rem;
-  left: 0.875rem;
-  z-index: 7;
-  min-width: 5.25rem;
-  min-height: 2.2rem;
-  padding: 0.42rem 0.75rem;
-  border: 1px solid rgba(244, 249, 248, 0.22);
-  border-radius: 6px;
-  color: #f4f9f8;
-  background: rgba(11, 13, 18, 0.82);
-  font-size: 0.78rem;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.pause-toggle:hover,
-.pause-toggle:focus-visible,
-.game-shell.is-paused .pause-toggle {
-  border-color: rgba(240, 201, 93, 0.72);
-  background: rgba(22, 25, 34, 0.95);
-}
-
 .post-processing-panel {
   position: absolute;
   top: 0.875rem;

@@ -43,6 +43,9 @@ const SPLITTER_BALL_SAFE_PADDING = 0.72;
 const MIN_MOVING_BALL_SPEED = 0.0001;
 const MIN_BALL_VERTICAL_DIRECTION = 0.18;
 const MAX_BALL_SPEED_FACTOR = 1.25;
+const BALL_LAUNCH_ANGLE = Math.PI / 4;
+const BALL_LAUNCH_DIRECTION_X = Math.sin(BALL_LAUNCH_ANGLE);
+const BALL_LAUNCH_DIRECTION_Y = Math.cos(BALL_LAUNCH_ANGLE);
 const READY_DURATION = 5;
 const FATAL_MISS_WARNING_LEAD = BALL_RADIUS * 3;
 const FATAL_MISS_Y = PADDLE_Y + PADDLE_HEIGHT / 2 + BALL_RADIUS + FATAL_MISS_WARNING_LEAD;
@@ -59,8 +62,11 @@ const PHYSICS_EPSILON = 0.000001;
 const PHYSICS_CORNER_TOLERANCE = 0.00001;
 const PHYSICS_SURFACE_CLEARANCE = 0.0001;
 const MAX_COLLISIONS_PER_STEP = 8;
+const LEVEL_LAYOUT_COUNT = 10;
+const LEVEL_BALL_SPEED_MULTIPLIER_STEP = 0.08;
+const MIN_LEVEL_BRICK_COUNT = 31;
 
-export type Phase = 'ready' | 'playing' | 'cleared' | 'game-over';
+export type Phase = 'ready' | 'playing' | 'game-over';
 export type BrickKind = 'normal' | 'splitter' | 'autopilot' | 'life' | 'projector';
 export const SPECIAL_BRICK_KINDS = ['splitter', 'autopilot', 'life', 'projector'] as const;
 export type SpecialBrickKind = typeof SPECIAL_BRICK_KINDS[number];
@@ -94,6 +100,7 @@ export type BrickSnapshot = {
 export type BreakoutoutoutSnapshot = {
   score: number;
   lives: number;
+  level: number;
   phase: Phase;
   readyRemaining: number;
   fatalMissPending: boolean;
@@ -206,6 +213,7 @@ export class BreakoutoutoutInstance {
   private bricks: Brick[] = [];
   private score = 0;
   private lives = 3;
+  private level = 1;
   private phase: Phase = 'ready';
   private readyRemaining = READY_DURATION;
   private fatalMissPending = false;
@@ -240,6 +248,7 @@ export class BreakoutoutoutInstance {
     if (snapshot) {
       this.score = snapshot.score;
       this.lives = snapshot.lives;
+      this.level = normalizeLevel(snapshot.level);
       this.phase = snapshot.phase;
       this.readyRemaining = snapshot.phase === 'ready'
         ? clamp(snapshot.readyRemaining ?? READY_DURATION, 0, READY_DURATION)
@@ -249,7 +258,7 @@ export class BreakoutoutoutInstance {
       this.targetPaddleX = snapshot.targetPaddleX;
       this.autoPilotRemaining = snapshot.autoPilotRemaining ?? 0;
       this.pathProjectionRemaining = snapshot.pathProjectionRemaining ?? 0;
-      this.ballSpeedMultiplier = snapshot.ballSpeedMultiplier ?? 1;
+      this.ballSpeedMultiplier = snapshot.ballSpeedMultiplier ?? levelBallSpeedMultiplier(this.level);
     }
 
     this.createPhysicsState(snapshot);
@@ -307,8 +316,11 @@ export class BreakoutoutoutInstance {
 
     this.phase = 'playing';
     this.readyRemaining = 0;
-    this.ball.vx = 0;
-    this.ball.vy = this.launchBallSpeed;
+    const directionX = this.launchBallDirectionX;
+    this.lastBallDirectionX = directionX * BALL_LAUNCH_DIRECTION_X;
+    this.lastBallDirectionY = BALL_LAUNCH_DIRECTION_Y;
+    this.ball.vx = this.lastBallDirectionX * this.launchBallSpeed;
+    this.ball.vy = this.lastBallDirectionY * this.launchBallSpeed;
 
     events.push(
       { type: 'sound', name: 'launch' },
@@ -317,13 +329,15 @@ export class BreakoutoutoutInstance {
   }
 
   restart(): BreakoutoutoutEvent[] {
-    if (this.phase === 'game-over' || this.phase === 'cleared') {
+    if (this.phase === 'game-over') {
       return [];
     }
 
     this.score = 0;
     this.lives = 3;
+    this.level = 1;
     this.fatalMissPending = false;
+    this.ballSpeedMultiplier = levelBallSpeedMultiplier(this.level);
     this.setReadyPhase();
     this.paddleX = 0;
     this.targetPaddleX = 0;
@@ -339,6 +353,7 @@ export class BreakoutoutoutInstance {
     return {
       score: this.score,
       lives: this.lives,
+      level: this.level,
       phase: this.phase,
       readyRemaining: this.readyRemaining,
       fatalMissPending: this.fatalMissPending,
@@ -361,6 +376,7 @@ export class BreakoutoutoutInstance {
         id: this.id,
         score: this.score,
         lives: this.lives,
+        level: this.level,
         phase: this.phase,
         readyRemaining: this.readyRemaining,
         fatalMissPending: this.fatalMissPending,
@@ -380,6 +396,7 @@ export class BreakoutoutoutInstance {
     target.id = this.id;
     target.score = this.score;
     target.lives = this.lives;
+    target.level = this.level;
     target.phase = this.phase;
     target.readyRemaining = this.readyRemaining;
     target.fatalMissPending = this.fatalMissPending;
@@ -428,6 +445,10 @@ export class BreakoutoutoutInstance {
     return this.ballSpeedMultiplier;
   }
 
+  getLevelBallSpeedMultiplier(): number {
+    return levelBallSpeedMultiplier(this.level);
+  }
+
   setPaddleSpeedMultiplier(multiplier: number): void {
     this.paddleSpeedMultiplier = clamp(multiplier, 0, 1);
   }
@@ -469,10 +490,6 @@ export class BreakoutoutoutInstance {
 
   hasPersistentAutopilot(): boolean {
     return this.persistentAutopilot;
-  }
-
-  isCleared(): boolean {
-    return this.phase === 'cleared';
   }
 
   forceGameOver(): BreakoutoutoutEvent[] {
@@ -538,7 +555,7 @@ export class BreakoutoutoutInstance {
   }
 
   private createBricks(brickSnapshots?: BrickSnapshot[]): void {
-    const snapshots = brickSnapshots ?? createFreshBrickSnapshots(this.specialBrickKinds);
+    const snapshots = brickSnapshots ?? createFreshBrickSnapshots(this.specialBrickKinds, this.level);
     this.bricks = snapshots.map((snapshot) => ({ ...snapshot }));
   }
 
@@ -647,6 +664,10 @@ export class BreakoutoutoutInstance {
     }
 
     for (const brick of collisions.bricksToRemove) {
+      if (this.phase !== 'playing' || !this.bricks.includes(brick)) {
+        break;
+      }
+
       this.removeBrick(brick, events);
     }
   }
@@ -695,6 +716,10 @@ export class BreakoutoutoutInstance {
       }
 
       for (const brick of collisions.bricksToRemove) {
+        if (this.phase !== 'playing' || !this.bricks.includes(brick)) {
+          break;
+        }
+
         this.removeBrick(brick, null);
       }
 
@@ -1002,13 +1027,7 @@ export class BreakoutoutoutInstance {
     }
 
     if (this.hasClearedRequiredBricks()) {
-      this.clearOptionalSplitterBricks();
-      this.phase = 'cleared';
-      this.autoPilotRemaining = 0;
-      this.pathProjectionRemaining = 0;
-      if (events) {
-        events.push({ type: 'sound', name: 'clear' });
-      }
+      this.advanceLevel(events);
     }
 
     if (events) {
@@ -1020,14 +1039,15 @@ export class BreakoutoutoutInstance {
     return this.bricks.every((item) => item.kind === 'splitter' || item.hit);
   }
 
-  private clearOptionalSplitterBricks(): void {
-    for (const brick of this.bricks) {
-      if (brick.kind !== 'splitter' || brick.hit) {
-        continue;
-      }
-
-      brick.hit = true;
-    }
+  private advanceLevel(events: BreakoutoutoutEvent[] | null): void {
+    this.level += 1;
+    this.autoPilotRemaining = 0;
+    this.pathProjectionRemaining = 0;
+    this.ballSpeedMultiplier = levelBallSpeedMultiplier(this.level);
+    this.setReadyPhase();
+    this.createBricks();
+    this.holdBallOnPaddle();
+    events?.push({ type: 'sound', name: 'clear' });
   }
 
   private keepBallPlanar(): void {
@@ -1104,6 +1124,14 @@ export class BreakoutoutoutInstance {
     return BALL_SPEED * this.ballSpeedMultiplier * this.gameSpeed;
   }
 
+  private get launchBallDirectionX(): number {
+    if (Math.abs(this.paddleX) > PHYSICS_EPSILON) {
+      return this.paddleX > 0 ? -1 : 1;
+    }
+
+    return Math.sign(this.lastBallDirectionX || 1);
+  }
+
   private get minimumBallSpeed(): number {
     return BALL_SPEED * this.ballSpeedMultiplier * this.gameSpeed;
   }
@@ -1118,25 +1146,21 @@ export class BreakoutoutoutInstance {
 
   private get isPaddleAutopilotActive(): boolean {
     return this.phase !== 'game-over'
-      && this.phase !== 'cleared'
       && (this.persistentAutopilot || this.autoPilotRemaining > 0);
   }
 
   private get isTemporaryAutopilotActive(): boolean {
     return this.phase !== 'game-over'
-      && this.phase !== 'cleared'
       && this.autoPilotRemaining > 0;
   }
 
   private get isPersistentAutopilotActive(): boolean {
     return this.phase !== 'game-over'
-      && this.phase !== 'cleared'
       && this.persistentAutopilot;
   }
 
   private get isPathProjectionActive(): boolean {
     return this.phase !== 'game-over'
-      && this.phase !== 'cleared'
       && this.pathProjectionRemaining > 0;
   }
 
@@ -1326,21 +1350,50 @@ function addBrickToList(bricks: Brick[], brick: Brick): void {
   }
 }
 
-function createFreshBrickSnapshots(specialBrickKinds: ReadonlySet<SpecialBrickKind>): BrickSnapshot[] {
+type LevelLayout = {
+  palette: readonly number[];
+  cells: readonly boolean[];
+};
+
+const LEVEL_COLOR_PALETTES: readonly (readonly number[])[] = [
+  [0xf45b69, 0xf59f00, 0xf7d154, 0x2ec4b6, 0x4cc9f0, 0xa78bfa],
+  [0xff6b35, 0x00c2a8, 0xffd166, 0x3a86ff, 0x8338ec, 0xff4d6d],
+  [0xef476f, 0x06d6a0, 0xffd166, 0x118ab2, 0x8ecae6, 0xffb703],
+  [0xff595e, 0x8ac926, 0xffca3a, 0x1982c4, 0x6a4c93, 0x4cc9f0],
+  [0xfb8500, 0x2a9d8f, 0xe9c46a, 0xe76f51, 0x80ed99, 0x48cae4],
+  [0xd00000, 0xffba08, 0x3f88c5, 0x032b43, 0x70e000, 0xff70a6],
+  [0xff7b00, 0x00bbf9, 0xfee440, 0x00f5d4, 0x9b5de5, 0xf15bb5],
+  [0xf94144, 0xf3722c, 0xf9c74f, 0x90be6d, 0x43aa8b, 0x577590],
+  [0xb5179e, 0x7209b7, 0x4361ee, 0x4cc9f0, 0xf72585, 0xffbe0b],
+  [0x06d6a0, 0x1b9aaa, 0xef476f, 0xffd166, 0x7b2cbf, 0xf77f00]
+];
+
+const LEVEL_LAYOUTS: readonly LevelLayout[] = LEVEL_COLOR_PALETTES.map((palette, index) => ({
+  palette,
+  cells: createLevelLayoutCells(index)
+}));
+
+function createFreshBrickSnapshots(specialBrickKinds: ReadonlySet<SpecialBrickKind>, level: number): BrickSnapshot[] {
+  const normalizedLevel = normalizeLevel(level);
+  const layoutIndex = levelLayoutIndex(normalizedLevel);
+  const layout = LEVEL_LAYOUTS[layoutIndex];
   const brickWidth = (BOARD_WIDTH - BRICK_LEFT_PAD * 2 - BRICK_GAP * (BRICK_COLS - 1)) / BRICK_COLS;
-  const palette = [0xf45b69, 0xf59f00, 0xf7d154, 0x2ec4b6, 0x4cc9f0, 0xa78bfa];
   const splitCol = Math.floor(BRICK_COLS / 2);
   const bricks: BrickSnapshot[] = [];
 
   for (let row = 0; row < BRICK_ROWS; row += 1) {
     for (let col = 0; col < BRICK_COLS; col += 1) {
+      if (!isLevelLayoutCellActive(layout, row, col) && !isMirroredForcedSpecialBrickCell(row, col, splitCol, specialBrickKinds)) {
+        continue;
+      }
+
       const kind = getFreshBrickKind(row, col, splitCol, specialBrickKinds);
       const x = -HALF_WIDTH + BRICK_LEFT_PAD + brickWidth / 2 + col * (brickWidth + BRICK_GAP);
       const y = BRICK_TOP_Y - row * (BRICK_HEIGHT + BRICK_GAP);
-      const color = getBrickColor(kind, row, palette);
+      const color = getBrickColor(kind, row, col, layout.palette);
 
       bricks.push({
-        id: `${row}:${col}`,
+        id: `level-${normalizedLevel}:layout-${layoutIndex}:${row}:${col}`,
         row,
         col,
         x,
@@ -1358,6 +1411,127 @@ function createFreshBrickSnapshots(specialBrickKinds: ReadonlySet<SpecialBrickKi
   return bricks;
 }
 
+function createLevelLayoutCells(layoutIndex: number): readonly boolean[] {
+  const random = createSeededRandom(0x6d2b79f5 ^ ((layoutIndex + 1) * 0x85ebca6b));
+  const cells = Array.from({ length: BRICK_ROWS * BRICK_COLS }, () => false);
+  const quadrantRows = Math.ceil(BRICK_ROWS / 2);
+  const quadrantCols = Math.ceil(BRICK_COLS / 2);
+
+  for (let row = 0; row < quadrantRows; row += 1) {
+    for (let col = 0; col < quadrantCols; col += 1) {
+      const centerPull = col / Math.max(quadrantCols - 1, 1);
+      const topPull = 1 - row / Math.max(quadrantRows - 1, 1);
+      const edgeBias = layoutIndex % 2 === 0 ? centerPull * 0.08 : (1 - centerPull) * 0.06;
+      const rowBias = topPull * 0.08;
+      const wave = Math.sin((layoutIndex + 2) * (row + 1) * 0.83 + col * 1.37) * 0.13;
+      const stagger = (row + col + layoutIndex) % 3 === 0 ? 0.08 : -0.02;
+      const threshold = clamp(0.5 + rowBias + edgeBias + wave + stagger, 0.34, 0.88);
+      if (random() < threshold) {
+        setMirroredLevelCells(cells, row, col);
+      }
+    }
+  }
+
+  ensureEveryMirroredLevelRowHasBrick(cells, random);
+  ensureMinimumSymmetricLevelBrickCount(cells, random);
+  return cells;
+}
+
+function ensureEveryMirroredLevelRowHasBrick(cells: boolean[], random: () => number): void {
+  const quadrantRows = Math.ceil(BRICK_ROWS / 2);
+  const quadrantCols = Math.ceil(BRICK_COLS / 2);
+
+  for (let row = 0; row < quadrantRows; row += 1) {
+    const mirroredRow = BRICK_ROWS - 1 - row;
+    if (levelRowHasBrick(cells, row) || levelRowHasBrick(cells, mirroredRow)) {
+      continue;
+    }
+
+    setMirroredLevelCells(cells, row, Math.floor(random() * quadrantCols));
+  }
+}
+
+function ensureMinimumSymmetricLevelBrickCount(cells: boolean[], random: () => number): void {
+  let activeCount = cells.filter(Boolean).length;
+  if (activeCount >= MIN_LEVEL_BRICK_COUNT) {
+    return;
+  }
+
+  const quadrantRows = Math.ceil(BRICK_ROWS / 2);
+  const quadrantCols = Math.ceil(BRICK_COLS / 2);
+  const candidates = shuffle(
+    Array.from({ length: quadrantRows * quadrantCols }, (_value, index) => ({
+      row: Math.floor(index / quadrantCols),
+      col: index % quadrantCols
+    })).filter((cell) => !cells[levelCellIndex(cell.row, cell.col)]),
+    random
+  );
+
+  for (const cell of candidates) {
+    activeCount += setMirroredLevelCells(cells, cell.row, cell.col);
+    if (activeCount >= MIN_LEVEL_BRICK_COUNT) {
+      return;
+    }
+  }
+}
+
+function levelRowHasBrick(cells: readonly boolean[], row: number): boolean {
+  for (let col = 0; col < BRICK_COLS; col += 1) {
+    if (cells[levelCellIndex(row, col)]) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isLevelLayoutCellActive(layout: LevelLayout, row: number, col: number): boolean {
+  return layout.cells[levelCellIndex(row, col)] === true;
+}
+
+function levelCellIndex(row: number, col: number): number {
+  return row * BRICK_COLS + col;
+}
+
+function mirroredLevelCellCoordinates(row: number, col: number): { row: number; col: number }[] {
+  const candidates = [
+    { row, col },
+    { row, col: BRICK_COLS - 1 - col },
+    { row: BRICK_ROWS - 1 - row, col },
+    { row: BRICK_ROWS - 1 - row, col: BRICK_COLS - 1 - col }
+  ];
+  const seen = new Set<number>();
+  const cells: { row: number; col: number }[] = [];
+
+  for (const cell of candidates) {
+    const index = levelCellIndex(cell.row, cell.col);
+    if (seen.has(index)) {
+      continue;
+    }
+
+    seen.add(index);
+    cells.push(cell);
+  }
+
+  return cells;
+}
+
+function setMirroredLevelCells(cells: boolean[], row: number, col: number): number {
+  let added = 0;
+
+  for (const cell of mirroredLevelCellCoordinates(row, col)) {
+    const index = levelCellIndex(cell.row, cell.col);
+    if (cells[index]) {
+      continue;
+    }
+
+    cells[index] = true;
+    added += 1;
+  }
+
+  return added;
+}
+
 function createSplitBonusBricks(
   existingBricks: BrickSnapshot[],
   carriedBall: BallSnapshot,
@@ -1365,7 +1539,7 @@ function createSplitBonusBricks(
   random: () => number
 ): BrickSnapshot[] {
   const brickWidth = (BOARD_WIDTH - BRICK_LEFT_PAD * 2 - BRICK_GAP * (BRICK_COLS - 1)) / BRICK_COLS;
-  const normalPalette = [0xf45b69, 0xf59f00, 0xf7d154, 0x2ec4b6, 0x4cc9f0, 0xa78bfa];
+  const normalPalette = normalPaletteFromBricks(existingBricks);
   const additions: BrickSnapshot[] = [];
   const kinds: BrickKind[] = specialBrickKinds.has('splitter')
     ? ['splitter', 'normal', 'normal']
@@ -1626,7 +1800,18 @@ function getFreshBrickKind(
   return 'normal';
 }
 
-function getBrickColor(kind: BrickKind, row: number, palette: number[]): number {
+function isMirroredForcedSpecialBrickCell(
+  row: number,
+  col: number,
+  splitCol: number,
+  specialBrickKinds: ReadonlySet<SpecialBrickKind>
+): boolean {
+  return mirroredLevelCellCoordinates(row, col).some(
+    (cell) => getFreshBrickKind(cell.row, cell.col, splitCol, specialBrickKinds) !== 'normal'
+  );
+}
+
+function getBrickColor(kind: BrickKind, row: number, col: number, palette: readonly number[]): number {
   if (kind === 'splitter') {
     return SPLITTER_COLOR;
   }
@@ -1643,7 +1828,23 @@ function getBrickColor(kind: BrickKind, row: number, palette: number[]): number 
     return PROJECTOR_COLOR;
   }
 
-  return palette[row % palette.length];
+  const mirroredRow = Math.min(row, BRICK_ROWS - 1 - row);
+  const mirroredCol = Math.min(col, BRICK_COLS - 1 - col);
+  return palette[(mirroredRow * 2 + mirroredCol) % palette.length];
+}
+
+function normalPaletteFromBricks(bricks: readonly BrickSnapshot[]): readonly number[] {
+  const colors: number[] = [];
+
+  for (const brick of bricks) {
+    if (brick.kind !== 'normal' || colors.includes(brick.color)) {
+      continue;
+    }
+
+    colors.push(brick.color);
+  }
+
+  return colors.length > 0 ? colors : LEVEL_LAYOUTS[0].palette;
 }
 
 function getSpecialBrickColor(kind: SpecialBrickKind): number {
@@ -1795,6 +1996,34 @@ function toBrickSnapshot(brick: Brick): BrickSnapshot {
 
 function createSpecialBrickKindSet(kinds: readonly SpecialBrickKind[] | undefined): ReadonlySet<SpecialBrickKind> {
   return new Set(kinds ?? SPECIAL_BRICK_KINDS);
+}
+
+function normalizeLevel(level: number | undefined): number {
+  if (typeof level !== 'number' || !Number.isFinite(level)) {
+    return 1;
+  }
+
+  return Math.max(1, Math.floor(level));
+}
+
+function levelLayoutIndex(level: number): number {
+  return (normalizeLevel(level) - 1) % LEVEL_LAYOUT_COUNT;
+}
+
+function levelBallSpeedMultiplier(level: number): number {
+  return 1 + (normalizeLevel(level) - 1) * LEVEL_BALL_SPEED_MULTIPLIER_STEP;
+}
+
+function createSeededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {

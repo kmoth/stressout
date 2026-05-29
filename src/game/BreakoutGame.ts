@@ -141,6 +141,10 @@ const PADDLE_AUTOPILOT_COLOR = 0xeafffb;
 const PADDLE_AUTOPILOT_EMISSIVE = 0x34d399;
 const PADDLE_AUTOPILOT_FLASH_COLOR = 0xffffff;
 const PADDLE_AUTOPILOT_FLASH_EMISSIVE = 0xb6fff3;
+const WALL_TEXTURE_COLOR = 0x4d8f99;
+const SPECIAL_BRICK_LIFE_BACKGROUND = 0xffffff;
+const SPECIAL_BRICK_LIFE_MARK = 0xe11d48;
+const SPECIAL_BRICK_DARK_MARK = 0x050505;
 const PADDLE_BASE_EMISSIVE_INTENSITY = 0.28;
 const PADDLE_AUTOPILOT_PULSE_SPEED = 22;
 const PADDLE_AUTOPILOT_EMISSIVE_MIN = 0.18;
@@ -234,13 +238,16 @@ const LEADERBOARD_VIEW_RESTART_Y = -5.56;
 const LEADERBOARD_VIEW_BACK_Y = -6.68;
 const LEADERBOARD_VIEW_BUTTON_Z = LEADERBOARD_PANEL_Z + 0.12;
 const PLANE_CORNER_HUD_Z = 0.92;
-const PLANE_CORNER_HUD_GAP = 0.28;
+const PLANE_CORNER_HUD_GAP = 0.14;
 const PLANE_SCORE_WORLD_HEIGHT = 0.84;
 const PLANE_SCORE_MAX_WIDTH = 9.6;
 const PLANE_SCORE_TWEEN_DURATION = 0.34;
 const PLANE_SCORE_TWEEN_EPSILON = 0.01;
+const PLANE_LEVEL_WORLD_HEIGHT = 0.58;
+const PLANE_LEVEL_MAX_WIDTH = 4.4;
 const PLANE_HEART_WORLD_HEIGHT = 0.68;
 const PLANE_HEART_MAX_WIDTH = 7.6;
+const HUD_HEART_CANVAS_PADDING = 2;
 const MAIN_MENU_RENDER_ORDER = 120;
 const MAIN_MENU_CAMERA_DISTANCE = 18.5;
 const MAIN_MENU_VERTICAL_SHIFT_Y = -BOARD_HEIGHT * 0.1;
@@ -259,17 +266,12 @@ const MAIN_MENU_LEADERBOARD_PANEL_MAX_WIDTH = LEADERBOARD_PANEL_MAX_WIDTH;
 const MAIN_MENU_LEADERBOARD_PANEL_X = 0;
 const MAIN_MENU_LEADERBOARD_PANEL_Y = 0;
 const MAIN_MENU_BUTTON_Z = 0.18;
-const PAUSE_MENU_RENDER_ORDER = MAIN_MENU_RENDER_ORDER + 10;
-const PAUSE_MENU_CAMERA_DISTANCE = MAIN_MENU_CAMERA_DISTANCE - 0.2;
-const PAUSE_MENU_PANEL_WORLD_HEIGHT = 3.15;
-const PAUSE_MENU_PANEL_MAX_WIDTH = 6.55;
-const PAUSE_MENU_TITLE_WORLD_HEIGHT = 0.68;
-const PAUSE_MENU_TITLE_MAX_WIDTH = 4.8;
-const PAUSE_MENU_TITLE_Y = 0.58;
-const PAUSE_MENU_BUTTON_WORLD_HEIGHT = 0.86;
-const PAUSE_MENU_BUTTON_MAX_WIDTH = 4.5;
-const PAUSE_MENU_BUTTON_Y = -0.58;
-const PAUSE_MENU_Z = MAIN_MENU_BUTTON_Z + 0.22;
+const PAUSE_CONTROL_RENDER_ORDER = PLANE_HUD_RENDER_ORDER + 3;
+const PAUSE_CONTROL_WORLD_HEIGHT = 1.06;
+const PAUSE_CONTROL_MAX_WIDTH = 1.06;
+const PAUSE_CONTROL_WALL_GAP = 0.02;
+const PAUSE_CONTROL_Z = 0.94;
+const PAUSE_CONTROL_CSS_SIZE = 112;
 const PLANE_SWITCH_CONTROLS_RENDER_ORDER = MAIN_MENU_RENDER_ORDER + 5;
 const PLANE_SWITCH_CONTROLS_DISTANCE = 12;
 const PLANE_SWITCH_CONTROLS_BOTTOM_MARGIN = 0.46;
@@ -293,18 +295,20 @@ const RENDER_MESH_DEPTHS = {
   backboard: PLAYFIELD_MESH_DEPTH * (0.2 / PLAYFIELD_MESH_DEPTH_BASELINE),
   boardMarker: PLAYFIELD_MESH_DEPTH * (0.04 / PLAYFIELD_MESH_DEPTH_BASELINE)
 } as const;
+const SPECIAL_BRICK_MARK_DEPTH = RENDER_MESH_DEPTHS.boardMarker;
+const SPECIAL_BRICK_MARK_Z = RENDER_MESH_DEPTHS.playfield / 2 + SPECIAL_BRICK_MARK_DEPTH / 2 + 0.006;
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
 const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
-  pixelSize: 3,
-  colorLevels: 32,
-  scanlineStrength: 0.38,
-  scanlineDensity: 0.5,
-  scanlineSpeed: -0.025,
+  pixelSize: 1,
+  colorLevels: 26,
+  scanlineStrength: 0.52,
+  scanlineDensity: 2,
+  scanlineSpeed: 0.01,
   vignetteStrength: 0,
   vignetteSmoothness: 0.1,
-  colorBleeding: 0.00015,
-  barrelCurvature: 0.036,
-  affineDistortion: 0.92
+  colorBleeding: 0,
+  barrelCurvature: 0.062,
+  affineDistortion: 0
 };
 const POST_PROCESSING_REFERENCE_SHORT_SIDE = 720;
 const POST_PROCESSING_REFERENCE_WIDTH = 1280;
@@ -324,7 +328,6 @@ const POST_PROCESSING_CONTROLS: readonly PostProcessingControlDefinition[] = [
 const PHASE_STATUS_LABEL = {
   ready: 'READY',
   playing: '',
-  cleared: 'CLEARED',
   'game-over': 'GAME OVER'
 } satisfies Record<BreakoutoutoutRenderState['phase'], string>;
 
@@ -530,15 +533,13 @@ type InstanceSelection = {
 
 type MainMenuAction = 'start' | 'leaderboard';
 
-type PauseMenuAction = 'resume';
-
 type PlaneSwitchAction = 'up' | 'down';
 
-type MenuButtonAction = MainMenuAction | PauseMenuAction | PlaneSwitchAction;
+type MenuButtonAction = MainMenuAction | PlaneSwitchAction;
 type MenuButtonVariant = 'primary' | 'secondary';
 
 type MenuButtonPlaneOptions = {
-  userDataKey?: 'menuAction' | 'pauseMenuAction' | 'planeSwitchAction';
+  userDataKey?: 'menuAction' | 'planeSwitchAction';
   variant?: MenuButtonVariant;
   cssWidth?: number;
   cssHeight?: number;
@@ -586,6 +587,7 @@ type InstanceView = {
   trackIndex: number;
   paddleMesh: THREE.Mesh;
   ballMesh: THREE.Mesh;
+  pauseControl: PauseControlButton;
   trajectoryProjection: TrajectoryProjection;
   vhsGlitch: VhsGlitchPlane;
   wallMeshes: THREE.Mesh[];
@@ -593,6 +595,7 @@ type InstanceView = {
   activeBrickIds: Set<string>;
   splitGlowMeshes: SplitGlowMesh[];
   scoreText: HudTextPlane;
+  levelText: HudTextPlane;
   hearts: HudHeartsPlane;
   statusText: HudTextPlane;
   endGamePrompt: EndGamePromptPlane;
@@ -622,7 +625,6 @@ export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot' | 'san
 
 export class BreakoutGame {
   private readonly shell: HTMLDivElement;
-  private readonly pauseButton: HTMLButtonElement;
   private readonly leaderboardNameInput: HTMLInputElement;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 180);
@@ -633,7 +635,6 @@ export class BreakoutGame {
   private readonly postProcessingPanel: PostProcessingPanel;
   private readonly projectorBeamPanel: ProjectorBeamPanel | null = null;
   private readonly mainMenu: MainMenuView;
-  private readonly pauseMenu: PauseMenuView;
   private readonly planeSwitchControls = new PlaneSwitchControlsView();
   private readonly splitTutorial = new SplitTutorialView(MAIN_MENU_RENDER_ORDER + 6);
   private readonly scoreboard: ScoreboardAdapter = createScoreboardAdapter();
@@ -642,6 +643,7 @@ export class BreakoutGame {
   private readonly keys = new Set<string>();
   private readonly pointerRaycaster = new THREE.Raycaster();
   private readonly pointerNdc = new THREE.Vector2();
+  private readonly pointerSceneUv = new THREE.Vector2();
   private readonly pointerBoardPlane = new THREE.Plane();
   private readonly pointerBoardNormal = new THREE.Vector3();
   private readonly pointerBoardPoint = new THREE.Vector3();
@@ -729,13 +731,12 @@ export class BreakoutGame {
   private splitSequenceActive = false;
   private fatalMissInstance: BreakoutoutoutInstance | null = null;
   private totalGameOver = false;
-  private totalGameCleared = false;
   private gameStarted = false;
   private paused = false;
   private hoveredMenuAction: MainMenuAction | null = null;
   private pressedMenuAction: MainMenuAction | null = null;
-  private hoveredPauseMenuAction: PauseMenuAction | null = null;
-  private pressedPauseMenuAction: PauseMenuAction | null = null;
+  private pauseControlHovered = false;
+  private pauseControlPressed = false;
   private hoveredPlaneSwitchAction: PlaneSwitchAction | null = null;
   private pressedPlaneSwitchAction: PlaneSwitchAction | null = null;
   private splitTutorialActive = false;
@@ -795,8 +796,6 @@ export class BreakoutGame {
     this.renderer.setPixelRatio(this.postProcessingRendererPixelRatio);
     this.renderer.setClearColor(0x07080b, 0);
     this.shell.appendChild(this.renderer.domElement);
-    this.pauseButton = this.createPauseButton();
-    this.shell.appendChild(this.pauseButton);
     this.leaderboardNameInput = this.createLeaderboardNameInput();
     this.shell.appendChild(this.leaderboardNameInput);
     this.scene.add(this.camera);
@@ -828,10 +827,7 @@ export class BreakoutGame {
     this.mainMenu = new MainMenuView();
     this.mainMenu.setVisible(!this.gameStarted);
     this.updateMainMenuLeaderboard();
-    this.pauseMenu = new PauseMenuView();
-    this.pauseMenu.setVisible(false);
     this.scene.add(this.mainMenu.group);
-    this.scene.add(this.pauseMenu.group);
     this.scene.add(this.planeSwitchControls.group);
     this.scene.add(this.splitTutorial.mesh);
     this.attachInput();
@@ -1070,9 +1066,11 @@ export class BreakoutGame {
     const group = new THREE.Group();
     const paddleMesh = this.createPaddleMesh();
     const ballMesh = this.createBallMesh();
+    const pauseControl = new PauseControlButton(PAUSE_CONTROL_RENDER_ORDER);
     const trajectoryProjection = new TrajectoryProjection();
     const vhsGlitch = new VhsGlitchPlane();
     const scoreText = this.createPlaneScoreText();
+    const levelText = this.createPlaneLevelText();
     const hearts = new HudHeartsPlane({ renderOrder: PLANE_HUD_RENDER_ORDER });
     const statusText = this.createPlaneStatusText();
     const endGamePrompt = new EndGamePromptPlane(PLANE_HUD_RENDER_ORDER + 1);
@@ -1091,8 +1089,10 @@ export class BreakoutGame {
       trajectoryProjection.mesh,
       paddleMesh,
       ballMesh,
+      pauseControl.mesh,
       vhsGlitch.mesh,
       scoreText.mesh,
+      levelText.mesh,
       hearts.mesh,
       statusText.mesh,
       endGamePrompt.mesh,
@@ -1108,6 +1108,7 @@ export class BreakoutGame {
       trackIndex,
       paddleMesh,
       ballMesh,
+      pauseControl,
       trajectoryProjection,
       vhsGlitch,
       wallMeshes,
@@ -1115,6 +1116,7 @@ export class BreakoutGame {
       activeBrickIds,
       splitGlowMeshes,
       scoreText,
+      levelText,
       hearts,
       statusText,
       endGamePrompt,
@@ -1141,6 +1143,17 @@ export class BreakoutGame {
     return new HudTextPlane({
       fontSize: 28,
       fill: '#f4f9f8',
+      paddingX: 0,
+      paddingY: 0,
+      renderOrder: PLANE_HUD_RENDER_ORDER
+    });
+  }
+
+  private createPlaneLevelText(): HudTextPlane {
+    return new HudTextPlane({
+      fontSize: 22,
+      fill: '#f0c95d',
+      weight: 'bold',
       paddingX: 0,
       paddingY: 0,
       renderOrder: PLANE_HUD_RENDER_ORDER
@@ -1254,7 +1267,7 @@ export class BreakoutGame {
     const wallMesh = new THREE.Mesh(
       this.createWallFrameGeometry(),
       makeFadeableMaterial(new THREE.MeshBasicMaterial({
-        color: 0x4d8f99
+        color: WALL_TEXTURE_COLOR
       }))
     );
     wallMesh.position.set(0, 0, -0.04);
@@ -1317,19 +1330,129 @@ export class BreakoutGame {
     );
   }
 
+  private splitGlowColorForBrick(brick: BrickSnapshot): number {
+    return brick.kind === 'splitter' ? WALL_TEXTURE_COLOR : brick.color;
+  }
+
   private createBrickMesh(brick: BrickSnapshot): THREE.Mesh {
     const isSplitter = brick.kind === 'splitter';
     const isAutopilot = brick.kind === 'autopilot';
     const isLife = brick.kind === 'life';
     const isProjector = brick.kind === 'projector';
+    const color = isLife ? SPECIAL_BRICK_LIFE_BACKGROUND : brick.color;
+    const opacity = isSplitter || isProjector ? 0 : 1;
     const material = makeFadeableMaterial(new THREE.MeshStandardMaterial({
-      color: brick.color,
-      emissive: brick.color,
+      color,
+      emissive: color,
       emissiveIntensity: isSplitter ? 0.7 : isAutopilot ? 0.62 : isLife ? 0.66 : isProjector ? 0.72 : 0.18 + brick.row * 0.018,
       roughness: isSplitter ? 0.24 : isAutopilot ? 0.3 : isLife ? 0.28 : isProjector ? 0.22 : 0.46,
-      metalness: isSplitter ? 0.34 : isAutopilot ? 0.22 : isLife ? 0.24 : isProjector ? 0.28 : 0.12
+      metalness: isSplitter ? 0.34 : isAutopilot ? 0.22 : isLife ? 0.24 : isProjector ? 0.28 : 0.12,
+      opacity
     }));
-    return new THREE.Mesh(new THREE.BoxGeometry(brick.width, brick.height, RENDER_MESH_DEPTHS.playfield), material);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(brick.width, brick.height, RENDER_MESH_DEPTHS.playfield), material);
+
+    if (isLife) {
+      this.addPlusBrickMark(mesh, brick);
+    } else if (isAutopilot) {
+      this.addAutopilotBrickMark(mesh, brick);
+    } else if (isSplitter) {
+      this.addSplitBrickMark(mesh, brick);
+    } else if (isProjector) {
+      this.addProjectorBrickMark(mesh, brick);
+    }
+
+    return mesh;
+  }
+
+  private addPlusBrickMark(mesh: THREE.Mesh, brick: BrickSnapshot): void {
+    const size = Math.min(brick.width * 0.42, brick.height * 0.72);
+    const thickness = Math.max(brick.height * 0.13, 0.045);
+    mesh.add(
+      this.createBrickFaceBar(thickness, size, SPECIAL_BRICK_LIFE_MARK),
+      this.createBrickFaceBar(size, thickness, SPECIAL_BRICK_LIFE_MARK)
+    );
+  }
+
+  private addAutopilotBrickMark(mesh: THREE.Mesh, brick: BrickSnapshot): void {
+    const glyphHeight = brick.height * 0.72;
+    const glyphWidth = Math.min(brick.width * 0.34, glyphHeight * 1.1);
+    const thickness = Math.max(brick.height * 0.105, 0.04);
+    const legOffset = glyphWidth * 0.22;
+    const leftLeg = this.createBrickFaceBar(thickness, glyphHeight, SPECIAL_BRICK_DARK_MARK);
+    const rightLeg = this.createBrickFaceBar(thickness, glyphHeight, SPECIAL_BRICK_DARK_MARK);
+    const crossbar = this.createBrickFaceBar(glyphWidth * 0.56, thickness * 0.82, SPECIAL_BRICK_DARK_MARK);
+
+    leftLeg.position.x = -legOffset;
+    rightLeg.position.x = legOffset;
+    leftLeg.rotation.z = -0.28;
+    rightLeg.rotation.z = 0.28;
+    crossbar.position.y = -glyphHeight * 0.07;
+    mesh.add(leftLeg, rightLeg, crossbar);
+  }
+
+  private addSplitBrickMark(mesh: THREE.Mesh, brick: BrickSnapshot): void {
+    const thickness = Math.max(brick.height * 0.055, 0.026);
+    this.addBrickFaceRectangleOutline(mesh, brick.width * 0.7, brick.height * 0.62, thickness, WALL_TEXTURE_COLOR);
+    this.addBrickFaceRectangleOutline(mesh, brick.width * 0.43, brick.height * 0.36, thickness, WALL_TEXTURE_COLOR);
+  }
+
+  private addProjectorBrickMark(mesh: THREE.Mesh, brick: BrickSnapshot): void {
+    const width = brick.width * 0.78;
+    const height = brick.height * 0.64;
+    const dotRadius = Math.max(Math.min(brick.width, brick.height) * 0.045, 0.018);
+    const horizontalCount = Math.max(9, Math.round(width / (dotRadius * 3.2)));
+    const verticalCount = Math.max(4, Math.round(height / (dotRadius * 3.2)));
+
+    for (let index = 0; index < horizontalCount; index += 1) {
+      const amount = horizontalCount === 1 ? 0.5 : index / (horizontalCount - 1);
+      const x = -width / 2 + amount * width;
+      mesh.add(
+        this.createBrickFaceDot(x, height / 2, dotRadius, brick.color),
+        this.createBrickFaceDot(x, -height / 2, dotRadius, brick.color)
+      );
+    }
+
+    for (let index = 1; index < verticalCount - 1; index += 1) {
+      const amount = verticalCount === 1 ? 0.5 : index / (verticalCount - 1);
+      const y = -height / 2 + amount * height;
+      mesh.add(
+        this.createBrickFaceDot(-width / 2, y, dotRadius, brick.color),
+        this.createBrickFaceDot(width / 2, y, dotRadius, brick.color)
+      );
+    }
+  }
+
+  private addBrickFaceRectangleOutline(
+    mesh: THREE.Mesh,
+    width: number,
+    height: number,
+    thickness: number,
+    color: number
+  ): void {
+    const top = this.createBrickFaceBar(width, thickness, color);
+    const bottom = this.createBrickFaceBar(width, thickness, color);
+    const left = this.createBrickFaceBar(thickness, height, color);
+    const right = this.createBrickFaceBar(thickness, height, color);
+
+    top.position.y = height / 2;
+    bottom.position.y = -height / 2;
+    left.position.x = -width / 2;
+    right.position.x = width / 2;
+    mesh.add(top, bottom, left, right);
+  }
+
+  private createBrickFaceBar(width: number, height: number, color: number): THREE.Mesh {
+    const material = makeFadeableMaterial(new THREE.MeshBasicMaterial({ color }));
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, SPECIAL_BRICK_MARK_DEPTH), material);
+    mesh.position.z = SPECIAL_BRICK_MARK_Z;
+    return mesh;
+  }
+
+  private createBrickFaceDot(x: number, y: number, radius: number, color: number): THREE.Mesh {
+    const material = makeFadeableMaterial(new THREE.MeshBasicMaterial({ color }));
+    const mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 12), material);
+    mesh.position.set(x, y, SPECIAL_BRICK_MARK_Z + SPECIAL_BRICK_MARK_DEPTH / 2);
+    return mesh;
   }
 
   private attachSplitGlow(
@@ -1398,13 +1521,9 @@ export class BreakoutGame {
 
     if (event.code === 'KeyP') {
       event.preventDefault();
-      if (!event.repeat) {
+      if (!event.repeat && (this.paused || this.canPauseGame())) {
         this.setPaused(!this.paused);
       }
-      return;
-    }
-
-    if (this.isPauseButtonEventTarget(event.target) && (event.code === 'Space' || event.code === 'Enter')) {
       return;
     }
 
@@ -1496,12 +1615,19 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerDown = (event: PointerEvent): void => {
+    if (this.pauseControlAtPointer(event.clientX, event.clientY)) {
+      event.preventDefault();
+      this.setPauseControlHovered(true);
+      this.setPauseControlPressed(true);
+      this.renderer.domElement.style.cursor = 'pointer';
+      return;
+    }
+
     if (this.paused) {
       event.preventDefault();
-      const action = this.pauseMenuActionAtPointer(event.clientX, event.clientY);
-      this.setHoveredPauseMenuAction(action);
-      this.setPressedPauseMenuAction(action);
-      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      this.setPauseControlHovered(false);
+      this.setPauseControlPressed(false);
+      this.renderer.domElement.style.cursor = '';
       return;
     }
 
@@ -1561,11 +1687,17 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerMove = (event: PointerEvent): void => {
+    const pauseControlHovered = this.activeTouchPointerId === null
+      && this.pauseControlAtPointer(event.clientX, event.clientY);
+    this.setPauseControlHovered(pauseControlHovered);
+    if (pauseControlHovered) {
+      this.renderer.domElement.style.cursor = 'pointer';
+      return;
+    }
+
     if (this.paused) {
       event.preventDefault();
-      const action = this.pauseMenuActionAtPointer(event.clientX, event.clientY);
-      this.setHoveredPauseMenuAction(action);
-      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
+      this.renderer.domElement.style.cursor = '';
       return;
     }
 
@@ -1612,16 +1744,22 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerUp = (event: PointerEvent): void => {
+    if (this.pauseControlPressed) {
+      event.preventDefault();
+      const pauseControlHovered = this.pauseControlAtPointer(event.clientX, event.clientY);
+      this.setPauseControlHovered(pauseControlHovered);
+      this.setPauseControlPressed(false);
+      this.renderer.domElement.style.cursor = pauseControlHovered ? 'pointer' : '';
+      if (pauseControlHovered) {
+        this.setPaused(!this.paused);
+      }
+      return;
+    }
+
     if (this.paused) {
       event.preventDefault();
-      const action = this.pauseMenuActionAtPointer(event.clientX, event.clientY);
-      const pressedAction = this.pressedPauseMenuAction;
-      this.setHoveredPauseMenuAction(action);
-      this.setPressedPauseMenuAction(null);
-      this.renderer.domElement.style.cursor = action ? 'pointer' : '';
-      if (action && action === pressedAction) {
-        this.handlePauseMenuAction(action);
-      }
+      this.setPauseControlHovered(false);
+      this.renderer.domElement.style.cursor = '';
       return;
     }
 
@@ -1679,9 +1817,14 @@ export class BreakoutGame {
   };
 
   private readonly handlePointerCancel = (event: PointerEvent): void => {
+    if (this.pauseControlPressed) {
+      event.preventDefault();
+      this.setPauseControlPressed(false);
+      return;
+    }
+
     if (this.paused) {
       event.preventDefault();
-      this.setPressedPauseMenuAction(null);
       return;
     }
 
@@ -1862,12 +2005,18 @@ export class BreakoutGame {
       height = bounds.width;
     }
 
+    this.pointerSceneUv.set(localX / width, 1 - localY / height);
+    this.mapPostProcessedPointerUvToSceneUv(this.pointerSceneUv);
     this.pointerNdc.set(
-      (localX / width) * 2 - 1,
-      -((localY / height) * 2 - 1)
+      this.pointerSceneUv.x * 2 - 1,
+      this.pointerSceneUv.y * 2 - 1
     );
     this.pointerRaycaster.setFromCamera(this.pointerNdc, this.camera);
     return true;
+  }
+
+  private mapPostProcessedPointerUvToSceneUv(uv: THREE.Vector2): void {
+    applyBarrelUv(uv, this.postProcessingUniforms.barrelCurvature.value);
   }
 
   private readonly handleOrientationLockChange = (): void => {
@@ -2063,8 +2212,11 @@ export class BreakoutGame {
 
     if (this.paused) {
       this.accumulator = 0;
-      this.pauseMenu.update(time / 1000, this.camera, PAUSE_MENU_CAMERA_DISTANCE);
+      this.syncViews(time / 1000, 0);
+      this.updateCamera(0);
       this.updatePostProcessingDebugDisplay();
+      this.updatePlaneHudBillboards();
+      this.syncLeaderboardNameInput();
       this.renderPipeline.render();
       requestAnimationFrame(this.tick);
       return;
@@ -2122,17 +2274,6 @@ export class BreakoutGame {
     this.renderPipeline.render();
     requestAnimationFrame(this.tick);
   };
-
-  private createPauseButton(): HTMLButtonElement {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'pause-toggle';
-    button.textContent = 'Pause';
-    button.setAttribute('aria-expanded', 'false');
-    button.setAttribute('aria-keyshortcuts', 'P');
-    button.addEventListener('click', () => this.setPaused(!this.paused));
-    return button;
-  }
 
   private createLeaderboardNameInput(): HTMLInputElement {
     const input = document.createElement('input');
@@ -2192,14 +2333,14 @@ export class BreakoutGame {
       return;
     }
 
+    if (paused && !this.canPauseGame()) {
+      return;
+    }
+
     this.paused = paused;
     this.shell.classList.toggle('is-paused', paused);
-    this.pauseMenu.setVisible(paused);
-    this.pauseButton.textContent = paused ? 'Resume' : 'Pause';
-    this.pauseButton.setAttribute('aria-expanded', String(paused));
-    this.pauseButton.setAttribute('aria-pressed', String(paused));
-    this.setHoveredPauseMenuAction(null);
-    this.setPressedPauseMenuAction(null);
+    this.setPauseControlHovered(false);
+    this.setPauseControlPressed(false);
 
     this.keys.clear();
     if (this.activePlaneSwitchPointerId !== null) {
@@ -2226,38 +2367,43 @@ export class BreakoutGame {
     this.renderer.domElement.focus({ preventScroll: true });
   }
 
-  private handlePauseMenuAction(action: PauseMenuAction): void {
-    if (action === 'resume') {
-      this.setPaused(false);
-    }
+  private canPauseGame(): boolean {
+    return this.gameStarted
+      && !this.projectorDebug
+      && !this.isGameFinished();
   }
 
-  private pauseMenuActionAtPointer(clientX: number, clientY: number): PauseMenuAction | null {
-    if (!this.paused || !this.updatePointerRay(clientX, clientY)) {
-      return null;
+  private pauseControlAtPointer(clientX: number, clientY: number): boolean {
+    const view = this.selectedView;
+    if (!view || !view.pauseControl.mesh.visible || !this.updatePointerRay(clientX, clientY)) {
+      return false;
     }
 
-    const hit = this.pointerRaycaster.intersectObjects(this.pauseMenu.buttonMeshes, false)[0];
-    const action = hit?.object.userData.pauseMenuAction;
-    return isPauseMenuAction(action) ? action : null;
+    return this.pointerRaycaster.intersectObject(view.pauseControl.mesh, false).length > 0;
   }
 
-  private setHoveredPauseMenuAction(action: PauseMenuAction | null): void {
-    if (this.hoveredPauseMenuAction === action) {
+  private setPauseControlHovered(hovered: boolean): void {
+    if (this.pauseControlHovered === hovered) {
       return;
     }
 
-    this.hoveredPauseMenuAction = action;
-    this.pauseMenu.setHoveredAction(action);
+    this.pauseControlHovered = hovered;
+    this.updatePauseControlStates();
   }
 
-  private setPressedPauseMenuAction(action: PauseMenuAction | null): void {
-    if (this.pressedPauseMenuAction === action) {
+  private setPauseControlPressed(pressed: boolean): void {
+    if (this.pauseControlPressed === pressed) {
       return;
     }
 
-    this.pressedPauseMenuAction = action;
-    this.pauseMenu.setPressedAction(action);
+    this.pauseControlPressed = pressed;
+    this.updatePauseControlStates();
+  }
+
+  private updatePauseControlStates(): void {
+    for (const view of this.views) {
+      view.pauseControl.setState(this.pauseControlHovered, this.pauseControlPressed && this.pauseControlHovered);
+    }
   }
 
   private planeSwitchActionAtPointer(clientX: number, clientY: number): PlaneSwitchAction | null {
@@ -2290,10 +2436,6 @@ export class BreakoutGame {
 
   private handlePlaneSwitchAction(action: PlaneSwitchAction): void {
     this.navigateInstances(action === 'up' ? 1 : -1);
-  }
-
-  private isPauseButtonEventTarget(target: EventTarget | null): boolean {
-    return target instanceof Node && this.pauseButton.contains(target);
   }
 
   private launchOrAdvanceSelected(): void {
@@ -2389,7 +2531,6 @@ export class BreakoutGame {
     this.splitSequenceActive = false;
     this.fatalMissInstance = null;
     this.totalGameOver = false;
-    this.totalGameCleared = false;
     this.splitTutorialActive = false;
     this.splitTutorialElapsed = 0;
     this.splitTutorial.setVisible(false);
@@ -2564,6 +2705,7 @@ export class BreakoutGame {
       phase: 'playing',
       readyRemaining: 0,
       fatalMissPending: false,
+      level: 1,
       paddleX: 0,
       targetPaddleX: 0,
       autoPilotRemaining: 0,
@@ -2584,6 +2726,7 @@ export class BreakoutGame {
     target.id = instance.id;
     target.score = 0;
     target.lives = 3;
+    target.level = 1;
     target.phase = 'playing';
     target.readyRemaining = 0;
     target.fatalMissPending = false;
@@ -2664,11 +2807,6 @@ export class BreakoutGame {
       return;
     }
 
-    if (this.areAllGamesCleared()) {
-      this.triggerAllGamesCleared(instance);
-      return;
-    }
-
     if (shouldSyncBallSpeed) {
       this.syncBallSpeedForAll();
     }
@@ -2710,26 +2848,6 @@ export class BreakoutGame {
 
     this.syncBallSpeedForAll();
     this.prepareLeaderboardAfterGameFinished(this.globalScore);
-  }
-
-  private triggerAllGamesCleared(source: BreakoutoutoutInstance): void {
-    if (this.isGameFinished()) {
-      return;
-    }
-
-    this.totalGameCleared = true;
-    this.fatalMissInstance = null;
-    this.clearTouchInput();
-    this.focusInstance(source);
-    this.syncBallSpeedForAll();
-    this.prepareLeaderboardAfterGameFinished(this.globalScore);
-  }
-
-  private areAllGamesCleared(): boolean {
-    return this.instances.length > 0
-      && !this.splitSequenceActive
-      && this.pendingSplits.length === 0
-      && this.instances.every((instance) => instance.isCleared());
   }
 
   private async refreshLeaderboard(): Promise<void> {
@@ -3382,7 +3500,7 @@ export class BreakoutGame {
           instance.setPaddleSpeedMultiplier(FATAL_MISS_PADDLE_SPEED_MULTIPLIER);
           this.setBallSpeedMultiplierTarget(
             instance,
-            FATAL_MISS_BALL_SPEED_MULTIPLIER,
+            instance.getLevelBallSpeedMultiplier() * FATAL_MISS_BALL_SPEED_MULTIPLIER,
             true,
             FATAL_MISS_BALL_SPEED_TWEEN_DURATION
           );
@@ -3397,10 +3515,12 @@ export class BreakoutGame {
     this.ensureSelectedInstanceIsActive(1);
 
     const selectedInstance = this.selectedInstance;
-    const backgroundBallSpeedMultiplier = this.ballSpeedMultiplierForActiveGames(this.activeGameCount);
+    const backgroundBallSpeedScale = this.ballSpeedMultiplierForActiveGames(this.activeGameCount);
     for (const instance of this.instances) {
       instance.setPaddleSpeedMultiplier(1);
-      const nextBallSpeedMultiplier = instance === selectedInstance ? 1 : backgroundBallSpeedMultiplier;
+      const levelBallSpeedMultiplier = instance.getLevelBallSpeedMultiplier();
+      const nextBallSpeedMultiplier = levelBallSpeedMultiplier
+        * (instance === selectedInstance ? 1 : backgroundBallSpeedScale);
       this.setBallSpeedMultiplierTarget(instance, nextBallSpeedMultiplier, instance === selectedInstance);
     }
   }
@@ -3514,6 +3634,7 @@ export class BreakoutGame {
     this.applyMeshOpacity(view, view.trajectoryProjection.mesh);
     this.updatePlaneCornerHud(view, state, delta);
     this.updatePlaneStatusHud(view, state);
+    this.updatePauseControlHud(view, state);
 
     view.activeBrickIds.clear();
     for (const brick of state.bricks) {
@@ -3537,13 +3658,17 @@ export class BreakoutGame {
       if (!mesh) {
         mesh = this.createBrickMesh(brick);
         view.bricks.set(brick.id, mesh);
-        view.splitGlowMeshes.push(this.attachSplitGlow(mesh, brick.color, {
+        view.splitGlowMeshes.push(this.attachSplitGlow(mesh, this.splitGlowColorForBrick(brick), {
           baseScale: brick.kind === 'splitter' || brick.kind === 'projector' ? 1.18 : 1.12,
           pulseScale: brick.kind === 'splitter' || brick.kind === 'projector' ? 0.62 : 0.38
         }));
         view.group.add(mesh);
         this.applyMeshOpacity(view, mesh);
-        setMaterialGreyscale(mesh.material, terminal);
+        mesh.traverse((object) => {
+          if (object instanceof THREE.Mesh) {
+            setMaterialGreyscale(object.material, terminal);
+          }
+        });
       }
 
       mesh.position.set(brick.x, brick.y, Math.sin(time * 1.5 + brick.x * 0.7) * 0.035);
@@ -3704,6 +3829,7 @@ export class BreakoutGame {
     const topEdge = HALF_HEIGHT + WALL_THICKNESS;
     const leftEdge = -HALF_WIDTH - WALL_THICKNESS;
     const rightEdge = HALF_WIDTH + WALL_THICKNESS;
+    const hudBottomY = topEdge + PLANE_CORNER_HUD_GAP;
     const visible = this.gameStarted;
     const displayedScore = this.updateScoreDisplay(view, state.score, delta);
 
@@ -3711,17 +3837,27 @@ export class BreakoutGame {
     view.scoreText.mesh.visible = visible;
     this.scalePlaneHudText(view.scoreText, PLANE_SCORE_WORLD_HEIGHT, PLANE_SCORE_MAX_WIDTH);
     view.scoreText.mesh.position.set(
-      leftEdge + view.scoreText.mesh.scale.x / 2,
-      topEdge + PLANE_CORNER_HUD_GAP + view.scoreText.mesh.scale.y / 2,
+      leftEdge + WALL_THICKNESS + view.scoreText.mesh.scale.x / 2,
+      hudBottomY + view.scoreText.mesh.scale.y / 2,
+      PLANE_CORNER_HUD_Z
+    );
+
+    view.levelText.setText(`LEVEL ${state.level}`, 220);
+    view.levelText.mesh.visible = visible;
+    this.scalePlaneHudText(view.levelText, PLANE_LEVEL_WORLD_HEIGHT, PLANE_LEVEL_MAX_WIDTH);
+    view.levelText.mesh.position.set(
+      0,
+      hudBottomY + view.levelText.mesh.scale.y / 2,
       PLANE_CORNER_HUD_Z
     );
 
     view.hearts.setCount(state.lives);
     this.scalePlaneHudPlane(view.hearts, PLANE_HEART_WORLD_HEIGHT, PLANE_HEART_MAX_WIDTH);
+    const heartPaddingWorld = hudCanvasPixelsToWorld(view.hearts, HUD_HEART_CANVAS_PADDING);
     view.hearts.mesh.visible = visible && state.lives > 0;
     view.hearts.mesh.position.set(
-      rightEdge - view.hearts.mesh.scale.x / 2,
-      topEdge + PLANE_CORNER_HUD_GAP + view.hearts.mesh.scale.y / 2,
+      rightEdge - view.hearts.mesh.scale.x / 2 + heartPaddingWorld,
+      hudBottomY + view.hearts.mesh.scale.y / 2,
       PLANE_CORNER_HUD_Z
     );
   }
@@ -3780,6 +3916,26 @@ export class BreakoutGame {
     }
 
     this.scalePlaneHudText(view.statusText, PLANE_STATUS_WORLD_HEIGHT, PLANE_STATUS_MAX_WIDTH);
+  }
+
+  private updatePauseControlHud(view: InstanceView, state: BreakoutoutoutRenderState): void {
+    const visible = this.canPauseGame()
+      && this.isSelectedView(view)
+      && !this.splitSequenceActive
+      && !this.splitTutorialActive
+      && !isTerminalPhase(state.phase);
+    view.pauseControl.setPaused(this.paused);
+    view.pauseControl.setVisible(visible);
+
+    if (!visible) {
+      return;
+    }
+
+    view.pauseControl.mesh.position.set(
+      0,
+      -HALF_HEIGHT - WALL_THICKNESS - PAUSE_CONTROL_WALL_GAP - view.pauseControl.mesh.scale.y / 2,
+      PAUSE_CONTROL_Z
+    );
   }
 
   private updateEndGamePromptHud(view: InstanceView, visible: boolean): void {
@@ -3864,20 +4020,12 @@ export class BreakoutGame {
       return `ANGLE ${Math.round(this.projectorDebugAngle * 180 / Math.PI)} DEG`;
     }
 
+    if (this.paused) {
+      return 'PAUSED';
+    }
+
     if (state.phase === 'ready') {
-      return `READY ${Math.max(1, Math.ceil(state.readyRemaining))}s`;
-    }
-
-    if (state.pathProjectionActive) {
-      return state.pathProjectionRemaining > 0
-        ? `PATH ${Math.ceil(state.pathProjectionRemaining)}s`
-        : 'PATH';
-    }
-
-    if (state.autoPilotActive && !state.persistentAutoPilotActive) {
-      return state.autoPilotRemaining > 0
-        ? `AUTO ${Math.ceil(state.autoPilotRemaining)}s`
-        : 'AUTO';
+      return `READY ${Math.max(1, Math.ceil(state.readyRemaining))}`;
     }
 
     return PHASE_STATUS_LABEL[state.phase];
@@ -3913,7 +4061,11 @@ export class BreakoutGame {
     }
 
     for (const mesh of view.bricks.values()) {
-      setMaterialGreyscale(mesh.material, terminal);
+      mesh.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          setMaterialGreyscale(object.material, terminal);
+        }
+      });
     }
 
     if (terminal) {
@@ -4386,12 +4538,12 @@ export class BreakoutGame {
   }
 
   private applyMeshOpacity(view: InstanceView, mesh: THREE.Mesh): void {
-    if (mesh.userData.splitGlow === true || mesh.userData.vhsGlitch === true) {
-      return;
-    }
-
     const opacity = Number.isFinite(view.appliedOpacity) ? view.appliedOpacity : this.targetOpacityForView(view);
-    setMaterialOpacity(mesh.material, opacity);
+    mesh.traverse((object) => {
+      if (object instanceof THREE.Mesh && object.userData.splitGlow !== true && object.userData.vhsGlitch !== true) {
+        setMaterialOpacity(object.material, opacity);
+      }
+    });
   }
 
   private targetOpacityForView(view: InstanceView): number {
@@ -4517,7 +4669,13 @@ export class BreakoutGame {
       view.scoreText.mesh.quaternion
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
+      view.levelText.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
       view.hearts.mesh.quaternion
+        .copy(this.planeHudParentQuaternion)
+        .multiply(this.planeHudCameraQuaternion);
+      view.pauseControl.mesh.quaternion
         .copy(this.planeHudParentQuaternion)
         .multiply(this.planeHudCameraQuaternion);
       view.statusText.mesh.quaternion
@@ -4613,7 +4771,7 @@ export class BreakoutGame {
   }
 
   private isGameFinished(): boolean {
-    return this.totalGameOver || this.totalGameCleared;
+    return this.totalGameOver;
   }
 
   private isGameOverCameraSequenceActive(): boolean {
@@ -4678,6 +4836,7 @@ function createEmptyRenderState(): BreakoutoutoutRenderState {
     id: 0,
     score: 0,
     lives: 0,
+    level: 1,
     phase: 'ready',
     readyRemaining: 0,
     fatalMissPending: false,
@@ -6245,7 +6404,7 @@ class HudHeartsPlane {
 
     const heartSize = 22;
     const gap = 6;
-    const padding = 2;
+    const padding = HUD_HEART_CANVAS_PADDING;
     const width = safeCount > 0 ? padding * 2 + safeCount * heartSize + (safeCount - 1) * gap : 1;
     const height = safeCount > 0 ? padding * 2 + heartSize : 1;
 
@@ -6780,6 +6939,136 @@ class PlaneSwitchControlsView {
   }
 }
 
+class PauseControlButton {
+  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+  readonly cssWidth = PAUSE_CONTROL_CSS_SIZE;
+  readonly cssHeight = PAUSE_CONTROL_CSS_SIZE;
+
+  private readonly canvas = document.createElement('canvas');
+  private readonly context: CanvasRenderingContext2D;
+  private readonly material: THREE.MeshBasicMaterial;
+  private texture: THREE.CanvasTexture;
+  private paused = false;
+  private hovered = false;
+  private pressed = false;
+
+  constructor(renderOrder: number) {
+    const context = this.canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Unable to create pause control canvas.');
+    }
+
+    this.context = context;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material = new THREE.MeshBasicMaterial({
+      map: this.texture,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    this.material.userData.baseOpacity = this.material.opacity;
+    this.material.userData.forceTransparent = true;
+
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = renderOrder;
+    this.mesh.visible = false;
+    this.mesh.userData.pauseControl = true;
+    this.resizeCanvas(
+      Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
+      Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
+    );
+    scaleMenuCanvasPlane(this.mesh, this.cssWidth, this.cssHeight, PAUSE_CONTROL_WORLD_HEIGHT, PAUSE_CONTROL_MAX_WIDTH);
+    this.draw();
+  }
+
+  setVisible(visible: boolean): void {
+    this.mesh.visible = visible;
+  }
+
+  setPaused(paused: boolean): void {
+    if (this.paused === paused) {
+      return;
+    }
+
+    this.paused = paused;
+    this.draw();
+  }
+
+  setState(hovered: boolean, pressed: boolean): void {
+    if (this.hovered === hovered && this.pressed === pressed) {
+      return;
+    }
+
+    this.hovered = hovered;
+    this.pressed = pressed;
+    this.draw();
+  }
+
+  private draw(): void {
+    const context = this.context;
+    const iconFill = this.pressed
+      ? '#fff3be'
+      : this.hovered
+        ? '#f0c95d'
+        : '#f8fafc';
+
+    context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
+    context.clearRect(0, 0, this.cssWidth, this.cssHeight);
+    context.shadowColor = this.hovered ? 'rgba(240, 201, 93, 0.42)' : 'rgba(244, 249, 248, 0.28)';
+    context.shadowBlur = this.hovered ? 14 : 9;
+    context.fillStyle = iconFill;
+    if (this.paused) {
+      this.drawPlayIcon(context);
+    } else {
+      this.drawPauseIcon(context);
+    }
+    context.shadowBlur = 0;
+    this.texture.needsUpdate = true;
+  }
+
+  private drawPauseIcon(context: CanvasRenderingContext2D): void {
+    const barWidth = 24;
+    const barHeight = 92;
+    const gap = 20;
+    const y = (this.cssHeight - barHeight) / 2;
+    const leftX = this.cssWidth / 2 - gap / 2 - barWidth;
+    const rightX = this.cssWidth / 2 + gap / 2;
+    roundedRectPath(context, leftX, y, barWidth, barHeight, 5);
+    context.fill();
+    roundedRectPath(context, rightX, y, barWidth, barHeight, 5);
+    context.fill();
+  }
+
+  private drawPlayIcon(context: CanvasRenderingContext2D): void {
+    const width = 78;
+    const height = 92;
+    const centerX = this.cssWidth / 2 + 5;
+    const centerY = this.cssHeight / 2;
+    context.beginPath();
+    context.moveTo(centerX - width / 2, centerY - height / 2);
+    context.lineTo(centerX - width / 2, centerY + height / 2);
+    context.lineTo(centerX + width / 2, centerY);
+    context.closePath();
+    context.fill();
+  }
+
+  private resizeCanvas(width: number, height: number): void {
+    if (this.canvas.width === width && this.canvas.height === height) {
+      return;
+    }
+
+    this.canvas.width = width;
+    this.canvas.height = height;
+    const oldTexture = this.texture;
+    this.texture = createHudCanvasTexture(this.canvas);
+    this.material.map = this.texture;
+    this.material.needsUpdate = true;
+    oldTexture.dispose();
+  }
+}
+
 class MainMenuView {
   readonly group = new THREE.Group();
   readonly buttonMeshes: THREE.Mesh[];
@@ -6929,103 +7218,6 @@ class MainMenuView {
   }
 }
 
-class PauseMenuView {
-  readonly group = new THREE.Group();
-  readonly buttonMeshes: THREE.Mesh[];
-
-  private readonly cameraForward = new THREE.Vector3();
-  private readonly panel = new PauseMenuPanelPlane(PAUSE_MENU_RENDER_ORDER);
-  private readonly title = new HudTextPlane({
-    fontSize: 54,
-    fill: '#f8fafc',
-    weight: 'bold',
-    paddingX: 0,
-    paddingY: 0,
-    renderOrder: PAUSE_MENU_RENDER_ORDER + 1
-  });
-  private readonly buttons = new Map<PauseMenuAction, MenuButtonPlane>();
-  private hoveredAction: PauseMenuAction | null = null;
-  private pressedAction: PauseMenuAction | null = null;
-
-  constructor() {
-    this.panel.mesh.position.set(0, 0, PAUSE_MENU_Z);
-    scaleMenuCanvasPlane(
-      this.panel.mesh,
-      this.panel.cssWidth,
-      this.panel.cssHeight,
-      PAUSE_MENU_PANEL_WORLD_HEIGHT,
-      PAUSE_MENU_PANEL_MAX_WIDTH
-    );
-    this.group.add(this.panel.mesh);
-
-    this.title.setText('Paused', 360);
-    this.title.mesh.position.set(0, PAUSE_MENU_TITLE_Y, PAUSE_MENU_Z + 0.04);
-    scaleMenuCanvasPlane(
-      this.title.mesh,
-      this.title.cssWidth,
-      this.title.cssHeight,
-      PAUSE_MENU_TITLE_WORLD_HEIGHT,
-      PAUSE_MENU_TITLE_MAX_WIDTH
-    );
-    this.group.add(this.title.mesh);
-
-    const resumeButton = new MenuButtonPlane('resume', 'resume', PAUSE_MENU_RENDER_ORDER + 2, {
-      userDataKey: 'pauseMenuAction'
-    });
-    resumeButton.mesh.position.set(0, PAUSE_MENU_BUTTON_Y, PAUSE_MENU_Z + 0.06);
-    scaleMenuCanvasPlane(
-      resumeButton.mesh,
-      resumeButton.cssWidth,
-      resumeButton.cssHeight,
-      PAUSE_MENU_BUTTON_WORLD_HEIGHT,
-      PAUSE_MENU_BUTTON_MAX_WIDTH
-    );
-    this.buttons.set('resume', resumeButton);
-
-    this.buttonMeshes = [resumeButton.mesh];
-    this.group.add(resumeButton.mesh);
-  }
-
-  setVisible(visible: boolean): void {
-    this.group.visible = visible;
-    if (!visible) {
-      this.setHoveredAction(null);
-      this.setPressedAction(null);
-    }
-  }
-
-  setHoveredAction(action: PauseMenuAction | null): void {
-    this.hoveredAction = action;
-    this.refreshButtonStates();
-  }
-
-  setPressedAction(action: PauseMenuAction | null): void {
-    this.pressedAction = action;
-    this.refreshButtonStates();
-  }
-
-  update(time: number, camera: THREE.Camera, distance: number): void {
-    if (!this.group.visible) {
-      return;
-    }
-
-    camera.getWorldDirection(this.cameraForward);
-    this.group.position
-      .copy(camera.position)
-      .addScaledVector(this.cameraForward, distance);
-    this.group.quaternion.copy(camera.quaternion);
-    this.group.translateY(Math.sin(time * 0.76) * 0.028);
-    this.group.rotateZ(Math.sin(time * 0.38) * 0.0035);
-  }
-
-  private refreshButtonStates(): void {
-    for (const [action, button] of this.buttons) {
-      const hovered = action === this.hoveredAction;
-      button.setState(hovered, hovered && action === this.pressedAction);
-    }
-  }
-}
-
 class MainMenuTitlePlane {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
 
@@ -7098,91 +7290,6 @@ class MainMenuTitlePlane {
     }
 
     this.context.shadowBlur = 0;
-    this.texture.needsUpdate = true;
-  }
-
-  private resizeCanvas(width: number, height: number): void {
-    if (this.canvas.width === width && this.canvas.height === height) {
-      return;
-    }
-
-    this.canvas.width = width;
-    this.canvas.height = height;
-    const oldTexture = this.texture;
-    this.texture = createHudCanvasTexture(this.canvas);
-    this.material.map = this.texture;
-    this.material.needsUpdate = true;
-    oldTexture.dispose();
-  }
-}
-
-class PauseMenuPanelPlane {
-  readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
-  readonly cssWidth = 620;
-  readonly cssHeight = 300;
-
-  private readonly canvas = document.createElement('canvas');
-  private readonly context: CanvasRenderingContext2D;
-  private readonly material: THREE.MeshBasicMaterial;
-  private texture: THREE.CanvasTexture;
-
-  constructor(renderOrder: number) {
-    const context = this.canvas.getContext('2d');
-    if (!context) {
-      throw new Error('Unable to create pause menu panel canvas.');
-    }
-
-    this.context = context;
-    this.texture = createHudCanvasTexture(this.canvas);
-    this.material = new THREE.MeshBasicMaterial({
-      map: this.texture,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-      side: THREE.DoubleSide
-    });
-    this.material.userData.forceTransparent = true;
-    this.material.userData.baseOpacity = this.material.opacity;
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
-    this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = renderOrder;
-    this.resizeCanvas(
-      Math.ceil(this.cssWidth * HUD_TEXTURE_SCALE),
-      Math.ceil(this.cssHeight * HUD_TEXTURE_SCALE)
-    );
-    this.draw();
-  }
-
-  private draw(): void {
-    this.context.setTransform(HUD_TEXTURE_SCALE, 0, 0, HUD_TEXTURE_SCALE, 0, 0);
-    this.context.clearRect(0, 0, this.cssWidth, this.cssHeight);
-
-    this.context.shadowColor = 'rgba(45, 212, 191, 0.26)';
-    this.context.shadowBlur = 22;
-    roundedRectPath(this.context, 10, 10, this.cssWidth - 20, this.cssHeight - 20, 10);
-    this.context.fillStyle = 'rgba(7, 10, 15, 0.88)';
-    this.context.fill();
-
-    this.context.shadowBlur = 0;
-    this.context.lineWidth = 3;
-    this.context.strokeStyle = 'rgba(167, 243, 208, 0.6)';
-    this.context.stroke();
-
-    this.context.lineWidth = 1;
-    this.context.strokeStyle = 'rgba(240, 201, 93, 0.26)';
-    roundedRectPath(this.context, 24, 24, this.cssWidth - 48, this.cssHeight - 48, 6);
-    this.context.stroke();
-
-    this.context.globalAlpha = 0.16;
-    this.context.strokeStyle = '#a7f3d0';
-    for (let y = 40; y < this.cssHeight - 36; y += 16) {
-      this.context.beginPath();
-      this.context.moveTo(44, y);
-      this.context.lineTo(this.cssWidth - 44, y);
-      this.context.stroke();
-    }
-    this.context.globalAlpha = 1;
-
     this.texture.needsUpdate = true;
   }
 
@@ -7604,8 +7711,37 @@ function postProcessingColorBleedScaleForSize(width: number, screenScale: number
   return screenScale * (POST_PROCESSING_REFERENCE_WIDTH / Math.max(1, width));
 }
 
+function applyBarrelUv(uv: THREE.Vector2, curvature: number): void {
+  if (curvature === 0) {
+    return;
+  }
+
+  const centeredX = (uv.x - 0.5) * 2;
+  const centeredY = (uv.y - 0.5) * 2;
+  const radiusSquared = centeredX * centeredX + centeredY * centeredY;
+  const distortion = 1 - radiusSquared * curvature;
+  if (distortion === 0) {
+    return;
+  }
+
+  const cornerDistortion = 1 - curvature * 2;
+  const scale = cornerDistortion / distortion * 0.5;
+  uv.set(centeredX * scale + 0.5, centeredY * scale + 0.5);
+}
+
 function stopEventPropagation(event: Event): void {
   event.stopPropagation();
+}
+
+function hudCanvasPixelsToWorld(
+  plane: { cssHeight: number; mesh: THREE.Mesh },
+  cssPixels: number
+): number {
+  if (plane.cssHeight <= 0 || cssPixels <= 0) {
+    return 0;
+  }
+
+  return plane.mesh.scale.y * cssPixels / plane.cssHeight;
 }
 
 function getSplitTutorialSeenFlag(): boolean {
@@ -7650,10 +7786,6 @@ function normalizeOrientationAngle(angle: number): number {
 
 function isMainMenuAction(value: unknown): value is MainMenuAction {
   return value === 'start' || value === 'leaderboard';
-}
-
-function isPauseMenuAction(value: unknown): value is PauseMenuAction {
-  return value === 'resume';
 }
 
 function isPlaneSwitchAction(value: unknown): value is PlaneSwitchAction {
@@ -7976,7 +8108,7 @@ function lerpHexColor(from: number, to: number, amount: number): number {
 }
 
 function isTerminalPhase(phase: BreakoutoutoutRenderState['phase']): boolean {
-  return phase === 'game-over' || phase === 'cleared';
+  return phase === 'game-over';
 }
 
 function autopilotPaddleApproachTime(state: BreakoutoutoutRenderState): number | null {
