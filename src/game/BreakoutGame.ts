@@ -4,6 +4,7 @@ import { barrelUV, colorBleeding, scanlines, vignette } from 'three/examples/jsm
 import { retroPass } from 'three/examples/jsm/tsl/display/RetroPassNode.js';
 import { circle } from 'three/examples/jsm/tsl/display/Shape.js';
 import { bayerDither } from 'three/examples/jsm/tsl/math/Bayer.js';
+import Stats from 'three/examples/jsm/libs/stats.module.js';
 import {
   BALL_RADIUS,
   BALL_SPEED,
@@ -34,6 +35,11 @@ import {
 } from './leaderboard';
 import { SoundBank } from './sound';
 
+function makeSharedGeometry<T extends THREE.BufferGeometry>(geometry: T): T {
+  geometry.userData.sharedGeometry = true;
+  return geometry;
+}
+
 type ProjectorBeamSettings = {
   color: number;
   opacity: number;
@@ -58,6 +64,9 @@ const MAX_DT = 1 / 20;
 const PLANE_Z_GAP = 5;
 const DEFAULT_INITIAL_INSTANCE_COUNT = 1;
 const MAX_INITIAL_INSTANCE_COUNT = 24;
+const BYTES_PER_MEBIBYTE = 1024 * 1024;
+const DEBUG_GPU_MEMORY_PANEL_MIN_MAX_MB = 256;
+const DEBUG_INSTANCE_PANEL_MIN_MAX = 64;
 const SPLIT_GAME_SPEED_TWEEN_DURATION = 0.55;
 const SPLIT_PLANE_TRAVEL_DURATION = 0.82;
 const SPLIT_PLANE_SPAWN_Z_OFFSET = 0.36;
@@ -131,6 +140,7 @@ const LANDSCAPE_PORTRAIT_LOCK_MEDIA_QUERY = '(orientation: landscape) and (max-h
 const SELECTED_OPACITY = 1;
 const SLOT_A_OPACITY = 0.08;
 const BACKGROUND_OPACITY = 0.15;
+const MAX_RENDERED_INSTANCE_VIEWS = 9;
 const INSTANCE_OPACITY_TWEEN_DURATION = 0.45;
 const INSTANCE_OPACITY_EPSILON = 0.001;
 const SOUND_MIN_VOLUME = 0.12;
@@ -301,6 +311,11 @@ const SPECIAL_BRICK_OUTER_MARK_WIDTH_RATIO = 0.96;
 const SPECIAL_BRICK_OUTER_MARK_HEIGHT_RATIO = 0.9;
 const SPLIT_BRICK_INNER_MARK_WIDTH_RATIO = 0.52;
 const SPLIT_BRICK_INNER_MARK_HEIGHT_RATIO = 0.46;
+const UNIT_PLANE_GEOMETRY = makeSharedGeometry(new THREE.PlaneGeometry(1, 1));
+const VHS_GLITCH_PLANE_GEOMETRY = makeSharedGeometry(
+  new THREE.PlaneGeometry(VHS_GLITCH_WORLD_WIDTH, VHS_GLITCH_WORLD_HEIGHT)
+);
+const TRAJECTORY_DOT_GEOMETRY = makeSharedGeometry(new THREE.CircleGeometry(1, 14));
 const IDLE_INPUT: BreakoutInput = { left: false, right: false };
 const POST_PROCESSING_DEFAULTS: PostProcessingSettings = {
   pixelSize: 1,
@@ -530,6 +545,14 @@ type DesiredPlaneView = {
   trackIndex: number;
 };
 
+type AddInstanceOptions = {
+  deferNewViewSceneAttach?: boolean;
+};
+
+type ReconcilePlaneViewsOptions = {
+  deferNewViewSceneAttach?: boolean;
+};
+
 type InstanceSelection = {
   index: number;
   trackOffset: number;
@@ -623,6 +646,7 @@ type InstanceView = {
 export type BreakoutGameOptions = Pick<BreakoutoutoutOptions, 'autopilot' | 'sandbox' | 'specialBrickKinds'> & {
   initialInstanceCount?: number;
   ballSpeedMultiplierActiveGameCap?: number;
+  debug?: boolean;
   projectorDebug?: boolean;
   pathProjectionDebug?: boolean;
 };
@@ -638,6 +662,9 @@ export class BreakoutGame {
   private readonly postProcessingUniforms: PostProcessingUniforms;
   private readonly postProcessingPanel: PostProcessingPanel;
   private readonly projectorBeamPanel: ProjectorBeamPanel | null = null;
+  private readonly stats: Stats | null;
+  private readonly gpuMemoryStatsPanel: Stats.Panel | null;
+  private readonly instanceStatsPanel: Stats.Panel | null;
   private readonly mainMenu: MainMenuView;
   private readonly planeSwitchControls = new PlaneSwitchControlsView();
   private readonly splitTutorial = new SplitTutorialView(MAIN_MENU_RENDER_ORDER + 6);
@@ -664,6 +691,7 @@ export class BreakoutGame {
   private readonly planeHudCameraQuaternion = new THREE.Quaternion();
   private readonly initialInstanceCount: number;
   private readonly autopilot: boolean;
+  private readonly debugMode: boolean;
   private readonly projectorDebug: boolean;
   private readonly pathProjectionDebug: boolean;
   private readonly ballSpeedMultiplierActiveGameCap: number;
@@ -707,6 +735,8 @@ export class BreakoutGame {
   private readonly pendingSplits: PendingSplit[] = [];
   private readonly splitBloomPulses: SplitBloomPulse[] = [];
   private readonly splitGlowActiveInstances = new Set<BreakoutoutoutInstance>();
+  private readonly pendingSceneAttachViews = new Set<InstanceView>();
+  private readonly disposedPendingSceneAttachViews = new Set<InstanceView>();
   private readonly ballSpeedMultiplierTargets = new Map<BreakoutoutoutInstance, number>();
   private readonly ballSpeedMultiplierTweens = new Map<BreakoutoutoutInstance, BallSpeedMultiplierTween>();
   private readonly postProcessingSettings: PostProcessingSettings = { ...POST_PROCESSING_DEFAULTS };
@@ -770,8 +800,13 @@ export class BreakoutGame {
   private postProcessingScreenScale = 1;
   private postProcessingColorBleedScale = 1;
   private postProcessingRendererPixelRatio = 1;
+  private pendingDebugInstanceAdds = 0;
+  private debugInstanceAddScheduled = false;
+  private debugInstanceAddInProgress = false;
+  private planeViewSceneAttachQueue: Promise<void> = Promise.resolve();
 
   private constructor(root: HTMLElement, options: BreakoutGameOptions = {}) {
+    this.debugMode = options.debug ?? false;
     this.projectorDebug = options.projectorDebug ?? false;
     this.pathProjectionDebug = options.pathProjectionDebug ?? false;
     this.initialInstanceCount = this.projectorDebug
@@ -800,6 +835,16 @@ export class BreakoutGame {
     this.renderer.setPixelRatio(this.postProcessingRendererPixelRatio);
     this.renderer.setClearColor(0x07080b, 0);
     this.shell.appendChild(this.renderer.domElement);
+    if (this.debugMode) {
+      const debugStats = this.createDebugStats();
+      this.stats = debugStats.stats;
+      this.gpuMemoryStatsPanel = debugStats.gpuMemoryPanel;
+      this.instanceStatsPanel = debugStats.instancePanel;
+    } else {
+      this.stats = null;
+      this.gpuMemoryStatsPanel = null;
+      this.instanceStatsPanel = null;
+    }
     this.leaderboardNameInput = this.createLeaderboardNameInput();
     this.shell.appendChild(this.leaderboardNameInput);
     this.scene.add(this.camera);
@@ -934,6 +979,24 @@ export class BreakoutGame {
     this.postProcessingPanel.setDebugState(this.postProcessingDebugState());
   }
 
+  private updateDebugStats(): void {
+    if (!this.stats) {
+      return;
+    }
+
+    const rendererMemory = this.renderer.info.memory;
+    const gpuMemoryMb = rendererMemory.total / BYTES_PER_MEBIBYTE;
+    this.gpuMemoryStatsPanel?.update(
+      gpuMemoryMb,
+      Math.max(DEBUG_GPU_MEMORY_PANEL_MIN_MAX_MB, gpuMemoryMb)
+    );
+    this.instanceStatsPanel?.update(
+      this.instances.length,
+      Math.max(DEBUG_INSTANCE_PANEL_MIN_MAX, this.instances.length)
+    );
+    this.stats.end();
+  }
+
   private exportPostProcessingSettings(): string {
     return `const POST_PROCESSING_DEFAULTS: PostProcessingSettings = ${formatPostProcessingSettings(
       this.postProcessingSettings
@@ -998,8 +1061,17 @@ export class BreakoutGame {
     const game = new BreakoutGame(root, options);
     await game.renderer.init();
     game.populateInitialInstances();
+    await game.precompileInitialScene();
     requestAnimationFrame(game.tick);
     return game;
+  }
+
+  private async precompileInitialScene(): Promise<void> {
+    try {
+      await this.retroScenePass.compileAsync(this.renderer);
+    } catch (error) {
+      console.warn('[Breakout] Initial scene precompile failed.', error);
+    }
   }
 
   private populateInitialInstances(): void {
@@ -1025,6 +1097,31 @@ export class BreakoutGame {
     this.populateInstances(DEFAULT_INITIAL_INSTANCE_COUNT, this.createMainMenuDemoOptions());
   }
 
+  private createDebugStats(): {
+    stats: Stats;
+    gpuMemoryPanel: Stats.Panel;
+    instancePanel: Stats.Panel;
+  } {
+    const stats = new Stats();
+    stats.dom.classList.add('stats-panel');
+    stats.dom.title = 'Stats: click to switch FPS, frame time, JS heap, renderer memory, or instance count.';
+    stats.dom.style.position = 'absolute';
+    stats.dom.style.top = '0';
+    stats.dom.style.left = '0';
+    stats.dom.style.zIndex = '8';
+
+    const gpuMemoryPanel = stats.addPanel(new Stats.Panel('GPU', '#f8d66d', '#241a02'));
+    const instancePanel = stats.addPanel(new Stats.Panel('INST', '#c4b5fd', '#170c2f'));
+    stats.showPanel(0);
+    this.shell.appendChild(stats.dom);
+
+    return {
+      stats,
+      gpuMemoryPanel,
+      instancePanel
+    };
+  }
+
   private createMainMenuDemoOptions(): BreakoutoutoutOptions {
     return {
       ...this.instanceOptions,
@@ -1041,7 +1138,11 @@ export class BreakoutGame {
     this.scene.add(ambient, key, rim);
   }
 
-  private addInstance(instance: BreakoutoutoutInstance, insertIndex = this.instances.length): InstanceView {
+  private addInstance(
+    instance: BreakoutoutoutInstance,
+    insertIndex = this.instances.length,
+    options: AddInstanceOptions = {}
+  ): InstanceView | null {
     const previousInstanceCount = this.instances.length;
     const nextIndex = clamp(Math.floor(insertIndex), 0, previousInstanceCount);
     if (!this.instanceGlitchLevels.has(instance)) {
@@ -1054,14 +1155,11 @@ export class BreakoutGame {
 
     instance.setGameSpeed(this.gameSpeed);
     this.syncBallSpeedForAll();
-    this.reconcilePlaneViews();
+    this.reconcilePlaneViews({
+      deferNewViewSceneAttach: options.deferNewViewSceneAttach === true
+    });
 
-    const view = this.viewForInstanceNearestTrack(instance, this.selectedTrackIndex);
-    if (!view) {
-      throw new Error(`Unable to create a view for instance ${instance.id}.`);
-    }
-
-    return view;
+    return this.viewForInstanceNearestTrack(instance, this.selectedTrackIndex);
   }
 
   private createInstanceView(instance: BreakoutoutoutInstance, trackIndex: number): InstanceView {
@@ -1485,7 +1583,7 @@ export class BreakoutGame {
       depthTest: false,
       toneMapped: false
     });
-    const mesh = new THREE.Mesh(source.geometry.clone(), material);
+    const mesh = new THREE.Mesh(source.geometry, material);
     mesh.frustumCulled = false;
     mesh.visible = false;
     mesh.renderOrder = 4;
@@ -1532,6 +1630,14 @@ export class BreakoutGame {
     if (this.isLeaderboardEntryActive()) {
       event.preventDefault();
       this.handleLeaderboardEntryKeyDown(event);
+      return;
+    }
+
+    if (this.debugMode && event.code === 'KeyI') {
+      event.preventDefault();
+      if (!event.repeat) {
+        this.queueDebugInstanceAdd();
+      }
       return;
     }
 
@@ -2222,6 +2328,7 @@ export class BreakoutGame {
   };
 
   private readonly tick = (time: number): void => {
+    this.stats?.begin();
     const frameTime = Math.max(0, (time - this.lastTime) / 1000);
     const delta = Math.min(frameTime, MAX_DT);
     this.lastTime = time;
@@ -2234,6 +2341,7 @@ export class BreakoutGame {
       this.updatePlaneHudBillboards();
       this.syncLeaderboardNameInput();
       this.renderPipeline.render();
+      this.updateDebugStats();
       requestAnimationFrame(this.tick);
       return;
     }
@@ -2288,6 +2396,7 @@ export class BreakoutGame {
     this.updateSplitTutorialBillboard();
     this.syncLeaderboardNameInput();
     this.renderPipeline.render();
+    this.updateDebugStats();
     requestAnimationFrame(this.tick);
   };
 
@@ -2482,6 +2591,60 @@ export class BreakoutGame {
     this.resetGame(this.initialInstanceCount, this.instanceOptions);
   }
 
+  private queueDebugInstanceAdd(): void {
+    this.pendingDebugInstanceAdds += 1;
+    this.scheduleDebugInstanceAdd();
+  }
+
+  private scheduleDebugInstanceAdd(): void {
+    if (this.debugInstanceAddScheduled || this.debugInstanceAddInProgress) {
+      return;
+    }
+
+    this.debugInstanceAddScheduled = true;
+    requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        this.debugInstanceAddScheduled = false;
+        void this.processNextDebugInstanceAdd();
+      }, 0);
+    });
+  }
+
+  private processNextDebugInstanceAdd(): void {
+    if (this.debugInstanceAddInProgress || this.pendingDebugInstanceAdds <= 0) {
+      return;
+    }
+
+    this.debugInstanceAddInProgress = true;
+    this.pendingDebugInstanceAdds -= 1;
+
+    try {
+      this.addDebugInstance();
+    } finally {
+      this.debugInstanceAddInProgress = false;
+      if (this.pendingDebugInstanceAdds > 0) {
+        this.scheduleDebugInstanceAdd();
+      }
+    }
+  }
+
+  private addDebugInstance(): void {
+    if (this.isMainMenuActive) {
+      this.startGameFromMenu();
+    }
+
+    if (this.isGameFinished()) {
+      this.restartGame();
+    }
+
+    const snapshot = this.projectorDebug ? this.createProjectorDebugSnapshot() : undefined;
+    const instance = new BreakoutoutoutInstance(this.nextInstanceId, snapshot, this.instanceOptions);
+    this.instanceGlitchLevels.set(instance, 0);
+    this.addInstance(instance, this.instances.length, { deferNewViewSceneAttach: true });
+    this.nextInstanceId += 1;
+    console.info(`[Breakout debug] Added instance ${instance.id}; total instances: ${this.instances.length}.`);
+  }
+
   private restartMainMenuDemo(): void {
     if (!this.isMainMenuActive) {
       return;
@@ -2518,6 +2681,7 @@ export class BreakoutGame {
     this.splitGlowActiveInstances.clear();
     this.ballSpeedMultiplierTargets.clear();
     this.ballSpeedMultiplierTweens.clear();
+    this.pendingDebugInstanceAdds = 0;
 
     for (const view of this.views) {
       this.disposePlaneView(view);
@@ -3206,12 +3370,22 @@ export class BreakoutGame {
 
   private volumeForInstance(instance: BreakoutoutoutInstance): number {
     const view = this.viewForInstanceNearestTrack(instance, this.selectedTrackIndex);
-    if (!view) {
+    if (view) {
+      view.group.getWorldPosition(this.instanceSoundPosition);
+      return this.volumeForSoundPosition(this.instanceSoundPosition);
+    }
+
+    const instanceIndex = this.instances.indexOf(instance);
+    if (instanceIndex < 0) {
       return 1;
     }
 
-    view.group.getWorldPosition(this.instanceSoundPosition);
-    const distanceToCamera = this.camera.position.distanceTo(this.instanceSoundPosition);
+    this.instanceSoundPosition.set(0, 0, this.targetPlaneZForTrack(this.trackIndexForInstanceIndex(instanceIndex)));
+    return this.volumeForSoundPosition(this.instanceSoundPosition);
+  }
+
+  private volumeForSoundPosition(position: THREE.Vector3): number {
+    const distanceToCamera = this.camera.position.distanceTo(position);
     const excessDistance = Math.max(0, distanceToCamera - this.cameraBaseDistance);
     return clamp(Math.exp(-excessDistance / SOUND_ATTENUATION_DISTANCE), SOUND_MIN_VOLUME, 1);
   }
@@ -3261,10 +3435,18 @@ export class BreakoutGame {
       this.selectedTrackIndex += 1;
     }
     const view = this.addInstance(clone, insertIndex);
+    this.triggerSplitBloom(clone, 1);
+    if (!view) {
+      if (pending.selectCloneOnComplete) {
+        this.selectInstance(this.instances.indexOf(clone));
+      }
+      this.resumeAfterSplitTravel();
+      return;
+    }
+
     const targetZ = this.targetPlaneZForTrack(view.trackIndex);
     const startZ = sourceZ - SPLIT_PLANE_SPAWN_Z_OFFSET;
     view.group.position.z = startZ;
-    this.triggerSplitBloom(clone, 1);
     view.zTransition = {
       from: startZ,
       to: targetZ,
@@ -4180,7 +4362,7 @@ export class BreakoutGame {
     );
   }
 
-  private reconcilePlaneViews(): void {
+  private reconcilePlaneViews(options: ReconcilePlaneViewsOptions = {}): void {
     if (this.instances.length === 0) {
       return;
     }
@@ -4191,7 +4373,7 @@ export class BreakoutGame {
 
     for (const desired of desiredViews) {
       const view = this.reusableViewForDesiredPlane(desired, retainedViews)
-        ?? this.createVisiblePlaneView(desired);
+        ?? this.createVisiblePlaneView(desired, options.deferNewViewSceneAttach === true);
       retainedViews.add(view);
       this.moveViewToTrack(view, desired.trackIndex);
     }
@@ -4213,9 +4395,11 @@ export class BreakoutGame {
   private desiredPlaneViews(): DesiredPlaneView[] {
     const desiredViews: DesiredPlaneView[] = [];
     const instanceCount = this.instances.length;
-    const startOffset = this.hasNavigatedInstances ? -1 : 0;
+    const visibleCount = Math.min(instanceCount, MAX_RENDERED_INSTANCE_VIEWS);
+    const startOffset = this.hasNavigatedInstances && visibleCount > 1 ? -1 : 0;
+    const endOffset = startOffset + visibleCount - 1;
 
-    for (let offset = startOffset; offset <= instanceCount - 1; offset += 1) {
+    for (let offset = startOffset; offset <= endOffset; offset += 1) {
       desiredViews.push({
         instance: this.instances[positiveModulo(this.selectedIndex + offset, instanceCount)],
         trackIndex: this.selectedTrackIndex + offset
@@ -4251,10 +4435,42 @@ export class BreakoutGame {
     return nearestAdjacentView;
   }
 
-  private createVisiblePlaneView(desired: DesiredPlaneView): InstanceView {
+  private createVisiblePlaneView(desired: DesiredPlaneView, deferSceneAttach = false): InstanceView {
     const view = this.createInstanceView(desired.instance, desired.trackIndex);
-    this.scene.add(view.group);
+    if (deferSceneAttach) {
+      this.schedulePlaneViewSceneAttach(view);
+    } else {
+      this.scene.add(view.group);
+    }
     return view;
+  }
+
+  private schedulePlaneViewSceneAttach(view: InstanceView): void {
+    this.pendingSceneAttachViews.add(view);
+    this.planeViewSceneAttachQueue = this.planeViewSceneAttachQueue
+      .catch(() => undefined)
+      .then(() => this.compileAndAttachPlaneView(view));
+  }
+
+  private async compileAndAttachPlaneView(view: InstanceView): Promise<void> {
+    try {
+      await this.renderer.compileAsync(view.group, this.camera, this.scene);
+    } catch (error) {
+      console.warn(`[Breakout] Deferred plane ${view.instance.id} precompile failed.`, error);
+    }
+
+    this.pendingSceneAttachViews.delete(view);
+
+    if (
+      this.disposedPendingSceneAttachViews.delete(view)
+      || !this.views.has(view)
+      || !this.instances.includes(view.instance)
+    ) {
+      this.disposePlaneViewResources(view);
+      return;
+    }
+
+    this.scene.add(view.group);
   }
 
   private moveViewToTrack(view: InstanceView, trackIndex: number): void {
@@ -4276,8 +4492,17 @@ export class BreakoutGame {
   }
 
   private disposePlaneView(view: InstanceView): void {
-    view.vhsGlitch.dispose();
     this.scene.remove(view.group);
+    if (this.pendingSceneAttachViews.has(view)) {
+      this.disposedPendingSceneAttachViews.add(view);
+      return;
+    }
+
+    this.disposePlaneViewResources(view);
+  }
+
+  private disposePlaneViewResources(view: InstanceView): void {
+    view.vhsGlitch.dispose();
     disposeObject(view.group);
   }
 
@@ -4951,10 +5176,7 @@ class VhsGlitchPlane {
       depthTest: false,
       toneMapped: false
     });
-    this.mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(VHS_GLITCH_WORLD_WIDTH, VHS_GLITCH_WORLD_HEIGHT),
-      this.material
-    );
+    this.mesh = new THREE.Mesh(VHS_GLITCH_PLANE_GEOMETRY, this.material);
     this.mesh.position.set(0, 0, VHS_GLITCH_WORLD_Z);
     this.mesh.renderOrder = VHS_GLITCH_RENDER_ORDER;
     this.mesh.frustumCulled = false;
@@ -4985,7 +5207,6 @@ class VhsGlitchPlane {
   dispose(): void {
     this.texture.dispose();
     this.material.dispose();
-    this.mesh.geometry.dispose();
   }
 
   private drawFrame(time: number, level: number, intensity: number): void {
@@ -5101,7 +5322,6 @@ class TrajectoryProjection {
   private lastOriginY = 0;
 
   constructor() {
-    const geometry = new THREE.CircleGeometry(1, 14);
     const material = makeFadeableMaterial(new THREE.MeshBasicMaterial({
       color: PROJECTOR_BEAM_DEFAULTS.color,
       transparent: true,
@@ -5111,7 +5331,7 @@ class TrajectoryProjection {
       depthTest: false,
       toneMapped: false
     }));
-    this.mesh = new THREE.InstancedMesh(geometry, material, TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT);
+    this.mesh = new THREE.InstancedMesh(TRAJECTORY_DOT_GEOMETRY, material, TRAJECTORY_PROJECTION_MAX_DOTS_LIMIT);
     this.mesh.count = 0;
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = PROJECTOR_BEAM_DEFAULTS.renderOrder;
@@ -6267,7 +6487,7 @@ class HudTextPlane {
     this.material.userData.baseOpacity = this.material.opacity;
     this.material.userData.forceTransparent = true;
 
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh = new THREE.Mesh(UNIT_PLANE_GEOMETRY, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = options.renderOrder;
     this.mesh.visible = false;
@@ -6404,7 +6624,7 @@ class HudHeartsPlane {
     this.material.userData.baseOpacity = this.material.opacity;
     this.material.userData.forceTransparent = true;
 
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh = new THREE.Mesh(UNIT_PLANE_GEOMETRY, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = options.renderOrder;
     this.mesh.visible = false;
@@ -6490,7 +6710,7 @@ class EndGamePromptPlane {
     this.material.userData.baseOpacity = this.material.opacity;
     this.material.userData.forceTransparent = true;
 
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh = new THREE.Mesh(UNIT_PLANE_GEOMETRY, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
     this.mesh.visible = false;
@@ -6638,7 +6858,7 @@ class LeaderboardPanelPlane {
     this.material.userData.baseOpacity = this.material.opacity;
     this.material.userData.forceTransparent = true;
 
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh = new THREE.Mesh(UNIT_PLANE_GEOMETRY, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
     this.mesh.visible = false;
@@ -6986,7 +7206,7 @@ class PauseControlButton {
     this.material.userData.baseOpacity = this.material.opacity;
     this.material.userData.forceTransparent = true;
 
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh = new THREE.Mesh(UNIT_PLANE_GEOMETRY, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
     this.mesh.visible = false;
@@ -7262,7 +7482,7 @@ class MainMenuTitlePlane {
     });
     this.material.userData.forceTransparent = true;
     this.material.userData.baseOpacity = this.material.opacity;
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh = new THREE.Mesh(UNIT_PLANE_GEOMETRY, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
     this.draw();
@@ -7367,7 +7587,7 @@ class MenuButtonPlane {
     });
     this.material.userData.forceTransparent = true;
     this.material.userData.baseOpacity = this.material.opacity;
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh = new THREE.Mesh(UNIT_PLANE_GEOMETRY, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
     this.mesh.userData[userDataKey] = action;
@@ -7493,7 +7713,7 @@ class SplitTutorialView {
     });
     this.material.userData.baseOpacity = this.material.opacity;
     this.material.userData.forceTransparent = true;
-    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.material);
+    this.mesh = new THREE.Mesh(UNIT_PLANE_GEOMETRY, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
     this.mesh.visible = false;
@@ -8147,12 +8367,25 @@ function autopilotPaddleApproachTime(state: BreakoutoutoutRenderState): number |
 }
 
 function disposeObject(object: THREE.Object3D): void {
+  const disposedGeometries = new Set<THREE.BufferGeometry>();
   object.traverse((child) => {
     if (child instanceof THREE.Mesh) {
-      child.geometry.dispose();
+      disposeGeometry(child.geometry, disposedGeometries);
       disposeMaterial(child.material);
     }
   });
+}
+
+function disposeGeometry(
+  geometry: THREE.BufferGeometry,
+  disposedGeometries: Set<THREE.BufferGeometry>
+): void {
+  if (geometry.userData.sharedGeometry === true || disposedGeometries.has(geometry)) {
+    return;
+  }
+
+  disposedGeometries.add(geometry);
+  geometry.dispose();
 }
 
 function disposeMaterial(material: THREE.Material | THREE.Material[]): void {

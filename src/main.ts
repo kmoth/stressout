@@ -36,6 +36,12 @@ const sandbox = parseBooleanParam(searchParams, 'sandbox') || parseBooleanParam(
 const specialBrickKinds = parseSpecialBrickKinds(searchParams);
 const initialInstanceCount = parseIntegerParam(searchParams, ['instances', 'instanceCount', 'initialInstances']);
 const ballSpeedMultiplierActiveGameCap = parseIntegerParam(searchParams, BALL_SPEED_MULTIPLIER_CAP_PARAM_NAMES);
+const debug = parseBooleanParam(searchParams, 'debug')
+  || parseBooleanParam(searchParams, 'debugMode')
+  || parseBooleanParam(searchParams, 'stats')
+  || parseBooleanParam(searchParams, 'statsDebug')
+  || parseBooleanParam(searchParams, 'performanceDebug')
+  || parseBooleanParam(searchParams, 'profileDebug');
 const projectorDebug = parseBooleanParam(searchParams, 'projectorDebug')
   || parseBooleanParam(searchParams, 'projectorDebugMode')
   || parseBooleanParam(searchParams, 'debugProjector');
@@ -51,6 +57,7 @@ BreakoutGame.create(root, {
   specialBrickKinds,
   initialInstanceCount,
   ballSpeedMultiplierActiveGameCap,
+  debug,
   projectorDebug,
   pathProjectionDebug
 }).catch((error: unknown) => {
